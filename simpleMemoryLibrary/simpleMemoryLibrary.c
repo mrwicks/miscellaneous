@@ -44,6 +44,9 @@
 
 #include "simpleMemoryLibrary.h"
 
+#define MEM_HEADER_GUARD_LEN (2)
+#define MEM_CAP_GUARD_LEN (2)
+
 LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
 {
@@ -53,12 +56,12 @@ struct memoryHeader
   pthread_t threadId;
 #endif //_PTHREAD_H
   LIST_ENTRY (memoryHeader) doubleLL;
-  unsigned long long ullFixedValues[2];
+  unsigned long long ullFixedValues[MEM_HEADER_GUARD_LEN];
 };
 
 struct memoryCap
 {
-  unsigned long long ullFixedValues[2];
+  unsigned long long ullFixedValues[MEM_CAP_GUARD_LEN];
 };
 
 #ifdef _PTHREAD_H
@@ -262,14 +265,17 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   unsigned char *ucPtr;
   size_t s;
   size_t size;
+  int i;
 
   // adjust pointer to the actual start of allocation
   mHead = (struct memoryHeader *)(vPtr - sizeof(struct memoryHeader));
 
   size = mHead->size;
 
-  assert (mHead->ullFixedValues[0] == 0xDEADBEEFCACAFECEULL);
-  assert (mHead->ullFixedValues[1] == 0xDEADBEEFCACAFECEULL);
+  for (i = 0 ; i < MEM_HEADER_GUARD_LEN ; i++)
+  {
+    assert (mHead->ullFixedValues[i] == 0xDEADBEEFCACAFECEULL);
+  }
 
   ucPtr = ((unsigned char *) vPtr);
   for (s = size ;
@@ -280,8 +286,10 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   }
   mCap = (struct memoryCap *)(ucPtr + s);
 
-  assert (mCap->ullFixedValues[0]   == 0xCACAFECEDEADBEEFULL);
-  assert (mCap->ullFixedValues[1]   == 0xCACAFECEDEADBEEFULL);
+  for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
+  {
+    assert (mCap->ullFixedValues[i] == 0xCACAFECEDEADBEEFULL);
+  }
 
   return mHead;
 }
@@ -297,6 +305,7 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   size_t adjSize;
   size_t s;
   char *szCaller = NULL;
+  int i;
 
   // NOTE: In this implementation, a size of 0 can be allocated
   //       This is POSIX compliant.  If the memory that is allocated
@@ -320,7 +329,7 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     MUTEX_LOCK (&g_mutex);
     LIST_REMOVE (mHead, doubleLL);
     MUTEX_UNLOCK (&g_mutex);
-    if (mHead->szAllocator)
+    if (mHead->szAllocator != NULL)
     {
       // delete string to who allocated it
       int iHookState = gi_hookDisabled;
@@ -343,25 +352,24 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     switch (type)
     {
     case REALLOC:
-      MUTEX_LOCK (&g_mutex);
-      gi_allocCount += (vPtr==NULL) ? 1 : 0;
-      MUTEX_UNLOCK (&g_mutex);
+      // alloc count doesn't change - even if 0 size is being actually
+      // allocated
       printf ("realloc (%p, %zu) = %p, allocated by %s, %d\n",
-	      vPtr, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
+	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
       break;
     case MALLOC:
       MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
       printf ("malloc (%zu) = %p, allocated by %s, %d\n",
-	      size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
+	      size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
       break;
     case CALLOC:
       MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
       printf ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
-	      nmemb, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
+	      nmemb, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
       break;
     }
     gi_hookDisabled = 0;
@@ -371,19 +379,21 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   // the allocation with essentially address == data, and place guard bands
   // on the memory at the bottom and top of memory
   mHead->szAllocator = szCaller;
-  mHead->size = size;
+  mHead->size = size*nmemb;
 #ifdef _PTHREAD_H
   mHead->threadId = pthread_self ();
 #endif //_PTHREAD_H
   MUTEX_LOCK (&g_mutex);
   LIST_INSERT_HEAD(&gp_listHead, mHead, doubleLL);
   MUTEX_UNLOCK (&g_mutex);
-  mHead->ullFixedValues[0] = 0xDEADBEEFCACAFECEULL;
-  mHead->ullFixedValues[1] = 0xDEADBEEFCACAFECEULL;
+  for (i = 0 ; i < MEM_HEADER_GUARD_LEN ; i++)
+  {
+    mHead->ullFixedValues[i] = 0xDEADBEEFCACAFECEULL;
+  }
 
   // point to usable memory
   ucPtr = ((unsigned char *)mHead) + (sizeof (struct memoryHeader));
-  for (s = size ;
+  for (s = mHead->size ;
        ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long));
        s++)
   {
@@ -392,8 +402,10 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
 
   // fill up the cap
   mCap = (struct memoryCap *)(ucPtr + s);
-  mCap->ullFixedValues[0] = 0xCACAFECEDEADBEEFULL;
-  mCap->ullFixedValues[1] = 0xCACAFECEDEADBEEFULL;
+  for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
+  {
+    mCap->ullFixedValues[i] = 0xCACAFECEDEADBEEFULL;
+  }
 
   return ucPtr;
 }
@@ -443,17 +455,11 @@ void *malloc (size_t size)
 
 void *realloc(void *vPtr, size_t size)
 {
-  if (size == 0 && vPtr != NULL)
-  {
-    // you can free memory with realloc, if you pass 0 size, with a
-    // non NULL pointer.
-    internalFree (vPtr, 4);
-    return NULL;
-  }
-  else
-  {
-    return internalRealloc (vPtr, size, 1, REALLOC);
-  }
+  // you can free memory with realloc, if you pass 0 size, with a
+  // non NULL pointer however, I can see in the realloc(3) implementation
+  // under linux, this will return a pointer which you can free, so
+  // we will allocate 0 size
+  return internalRealloc (vPtr, size, 1, REALLOC);
 }
 
 void *calloc(size_t nmemb, size_t size)
@@ -477,7 +483,7 @@ void *calloc(size_t nmemb, size_t size)
     vPtr = internalRealloc (NULL, nmemb, size, CALLOC);
   }
   
-  bzero (vPtr, sizeof(size));
+  bzero (vPtr, size);
   return vPtr;
 }
 
