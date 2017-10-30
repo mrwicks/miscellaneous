@@ -1,7 +1,7 @@
 // compile with one of the following:
 // ----------------------------------
-// gcc -g -Wall -rdynamic /tmp/jjjj.c -ldl
-// gcc -g -Wall -rdynamic /tmp/jjjj.c -ldl -pthread
+// gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl
+// gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl -pthread
 //
 // This library over-rides malloc(3), realloc(3), calloc(3), and the free(3)
 // functions in order to detect memory leaks, and memory over-runs.  All
@@ -27,7 +27,7 @@
 #define __USE_GNU 1
 #include <dlfcn.h>
 
-LIST_HEAD (listHead, memoryHeader) gp_listHead;
+__thread LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
 {
   char *szAllocator;
@@ -111,27 +111,6 @@ void showAllocations (void)
   }
 }
 
-void dump (char *szName, unsigned long long addr)
-{
-  int i;
-
-  for (i = 0 ; szName[i] != '\0' ; i++)
-  {
-    putchar (szName[i]);
-  }
-  putchar (':');
-  putchar (' ');
-//  for (i = (2 *(sizeof (unsigned long long)))-1 ; i >= 0  ; i--)
-  for (i = 16-1 ; i >= 0  ; i--)
-  {
-    unsigned char val;
-
-    val = (unsigned char)(addr >> (4*i)) & 0xf;
-    putchar (val + ((val <= 9) ? '0' : ('a'-10)));
-  }
-  putchar ('\n');
-}
-
 static char *trace (int iLen, unsigned ucGetPtr)
 {
   int nptrs;
@@ -166,6 +145,35 @@ static char *trace (int iLen, unsigned ucGetPtr)
   return szPtr;
 }
 
+static struct memoryHeader *verifyIntegrity (void *vPtr)
+{
+  struct memoryHeader *mHead;
+  struct memoryCap    *mCap;
+  unsigned char *ucPtr;
+  size_t s;
+  size_t size;
+
+  // adjust pointer to the actual start of allocation
+  mHead = (struct memoryHeader *)(vPtr - sizeof(struct memoryHeader));
+
+  size = mHead->size;
+
+  assert (mHead->ullFixedValues[0] == 0xDEADBEEFCACAFECEULL);
+  assert (mHead->ullFixedValues[1] == 0xDEADBEEFCACAFECEULL);
+
+  ucPtr = ((unsigned char *) vPtr);
+  for (s = size ; ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long)); s++)
+  {
+    assert (ucPtr[s] == (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF));
+  }
+  mCap = (struct memoryCap *)(ucPtr + s);
+
+  assert (mCap->ullFixedValues[0]   == 0xCACAFECEDEADBEEFULL);
+  assert (mCap->ullFixedValues[1]   == 0xCACAFECEDEADBEEFULL);
+
+  return mHead;
+}
+
 #define REALLOC 0
 #define MALLOC  1
 #define CALLOC  2
@@ -193,7 +201,11 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   // adjust pointer to the actual start of allocation
   if (vPtr != NULL)
   {
-    mHead = (struct memoryHeader *)(vPtr - sizeof(struct memoryHeader));
+    // we have to remove this from the linked list because we are reallocating
+    // the memory - which may move it.  Verify the integrity of the memory as
+    // well.
+    mHead = verifyIntegrity (vPtr);
+    LIST_REMOVE (mHead, doubleLinkedList);
   }
   mHead = (struct memoryHeader *)orgRealloc (mHead, adjSize);
   if (mHead == NULL)
@@ -250,39 +262,16 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   return ucPtr;
 }
 
-void fuck (void)
-{
-}
-
 static void internalFree (void *vPtr, int iLen)
 {
   struct memoryHeader *mHead;
-  struct memoryCap    *mCap;
-  unsigned char *ucPtr;
-  size_t s;
-  size_t size;
   char *szCaller=NULL;
   char *szAllocator=NULL;
 
-  // adjust pointer to the actual start of allocation
-  mHead = (struct memoryHeader *)(vPtr - sizeof(struct memoryHeader));
+  // verify not over-runs in data
+  mHead = verifyIntegrity (vPtr);
 
   szAllocator = mHead->szAllocator;
-  size = mHead->size;
-
-  assert (mHead->ullFixedValues[0] == 0xDEADBEEFCACAFECEULL);
-  assert (mHead->ullFixedValues[1] == 0xDEADBEEFCACAFECEULL);
-
-  ucPtr = ((unsigned char *) vPtr);
-  for (s = size ; ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long)); s++)
-  {
-    assert (ucPtr[s] == (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF));
-  }
-  mCap = (struct memoryCap *)(ucPtr + s);
-
-  assert (mCap->ullFixedValues[0]   == 0xCACAFECEDEADBEEFULL);
-  assert (mCap->ullFixedValues[1]   == 0xCACAFECEDEADBEEFULL);
-//  return;
 
   LIST_REMOVE (mHead, doubleLinkedList);
   orgFree (mHead);
@@ -291,7 +280,7 @@ static void internalFree (void *vPtr, int iLen)
   {
     gi_hookDisabled = 1;
     szCaller = trace (iLen, 1);
-    printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n", &mHead->ullFixedValues[2], szAllocator, szCaller, gi_allocCount);
+    printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n", vPtr, szAllocator, szCaller, gi_allocCount);
     gi_allocCount--;
 
     if (szCaller != NULL)
