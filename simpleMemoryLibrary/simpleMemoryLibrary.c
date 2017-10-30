@@ -20,6 +20,9 @@
 //
 // Note that printf(3) makes use of malloc(3) which requires the need to 
 // NOT track memory used internally by glibc while in these functions.
+//
+// This code is based off from this presentation:
+//    https://www.slideshare.net/tetsu.koba/tips-of-malloc-free
 
 #include <stdio.h>
 #include <stdlib.h>
