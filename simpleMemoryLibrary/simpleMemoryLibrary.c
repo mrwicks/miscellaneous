@@ -14,7 +14,9 @@
 // This should be light enough to leave in a final build.
 //
 // Additional functions available:
-//   showAllocations (FILE *fp) - shows what's currently allocated
+//   void showAllocations (FILE *fp) - shows what's currently allocated
+//   int getAllocCount (void) - get the # of allocations
+//   size_t getUsage (void) - total amount of memory allocated
 //
 // Note that printf(3) makes use of malloc(3) which requires the need to 
 // NOT track memory used internally by glibc while in these functions.
@@ -30,12 +32,14 @@
 
 #define __USE_GNU 1
 #include <dlfcn.h>
+#include <pthread.h>
 
-__thread LIST_HEAD (listHead, memoryHeader) gp_listHead;
+LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
 {
   char *szAllocator;
   size_t size;
+  pthread_t threadId;
   LIST_ENTRY (memoryHeader) doubleLinkedList;
   unsigned long long ullFixedValues[2];
 };
@@ -45,8 +49,10 @@ struct memoryCap
   unsigned long long ullFixedValues[2];
 };
 
+pthread_mutex_t g_mutex;
+
+static int gi_allocCount=0;
 static __thread int gi_hookDisabled=0;
-static __thread int gi_allocCount=0;
 static void * (*gp_orgMalloc)  (size_t size)              = NULL;
 static void   (*gp_orgFree)    (void *ptr)                = NULL;
 static void * (*gp_orgCalloc)  (size_t nmeb, size_t size) = NULL;
@@ -55,6 +61,46 @@ static void * (*gp_orgRealloc) (void *ptr, size_t size)   = NULL;
 void static init (void) __attribute__((constructor)); // initialize this library
 void static end  (void) __attribute__((destructor));  // check for any outstanding allocs
 
+#define MUTEX_INIT(mp)                                    \
+do                                                        \
+{                                                         \
+  if (pthread_mutex_init(mp,NULL) != 0)                   \
+  {                                                       \
+    perror("pthread_mutex_init");                         \
+    exit(EXIT_FAILURE);                                   \
+  }                                                       \
+} while (0)
+
+#define MUTEX_LOCK(mp)                                    \
+do                                                        \
+{                                                         \
+  if (pthread_mutex_lock(mp) != 0)                        \
+  {                                                       \
+    perror("pthread_mutex_lock");                         \
+    exit(EXIT_FAILURE);                                   \
+  }                                                       \
+} while (0)
+
+#define MUTEX_UNLOCK(mp)                                  \
+do                                                        \
+{                                                         \
+  if (pthread_mutex_unlock(mp) != 0)                      \
+  {                                                       \
+    perror("pthread_mutex_unlock");                       \
+    exit(EXIT_FAILURE);                                   \
+  }                                                       \
+} while (0)
+
+#define MUTEX_DESTROY(mp)                                 \
+do                                                        \
+{                                                         \
+  if (pthread_mutex_destroy(mp) != 0)                     \
+  {                                                       \
+    perror("pthread_mutex_destroy");                      \
+    exit(EXIT_FAILURE);                                   \
+  }                                                       \
+} while (0)
+
 static void init (void)
 {
   // only realloc and free are actually used, but I keep pointers to all
@@ -62,8 +108,34 @@ static void init (void)
   gp_orgFree    = dlsym (RTLD_NEXT, "free");
   gp_orgCalloc  = dlsym (RTLD_NEXT, "calloc");
   gp_orgRealloc = dlsym (RTLD_NEXT, "realloc");
+  MUTEX_INIT (&g_mutex);
 
   LIST_INIT (&gp_listHead);
+}
+
+int getAllocCount (void)
+{
+  return gi_allocCount;
+}
+
+size_t getUsage (void)
+{
+  struct memoryHeader *ml;
+  size_t size=0;
+ 
+  MUTEX_LOCK (&g_mutex);
+  for (ml = gp_listHead.lh_first ;
+       ml != NULL ;
+       ml = ml->doubleLinkedList.le_next)
+  {
+    if (ml->szAllocator != NULL)
+    {
+      size += ml->size;
+    }
+  }
+  MUTEX_UNLOCK (&g_mutex);
+
+  return size;
 }
 
 void showAllocations (FILE *fp)
@@ -71,7 +143,10 @@ void showAllocations (FILE *fp)
   struct memoryHeader *ml;
   int iCount=0;
   
-  for (ml = gp_listHead.lh_first ; ml != NULL ; ml = ml->doubleLinkedList.le_next)
+  MUTEX_LOCK (&g_mutex);
+  for (ml = gp_listHead.lh_first ;
+       ml != NULL ;
+       ml = ml->doubleLinkedList.le_next)
   {
     if (ml->szAllocator != NULL)
     {
@@ -80,7 +155,8 @@ void showAllocations (FILE *fp)
 	// create a header
 	fprintf (fp, "\n");
 	int iLen = fprintf (fp, "%d block%s remain%s allocated\n",
-			    gi_allocCount, gi_allocCount > 1 ? "s":"" , gi_allocCount > 1 ? "":"s");
+			    gi_allocCount, gi_allocCount > 1 ? "s":"" ,
+			    gi_allocCount > 1 ? "":"s");
 	while (--iLen > 0)
 	{
 	  fprintf (fp, "-");
@@ -96,11 +172,13 @@ void showAllocations (FILE *fp)
   {
     fprintf (fp, "\n");
   }
+  MUTEX_UNLOCK (&g_mutex);
 }
 
 static void end (void)
 {
   showAllocations (stderr);
+  MUTEX_DESTROY (&g_mutex);
 }
 
 static char *trace (int iLen, unsigned ucGetPtr)
@@ -154,7 +232,9 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   assert (mHead->ullFixedValues[1] == 0xDEADBEEFCACAFECEULL);
 
   ucPtr = ((unsigned char *) vPtr);
-  for (s = size ; ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long)); s++)
+  for (s = size ;
+       ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long));
+       s++)
   {
     assert (ucPtr[s] == (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF));
   }
@@ -197,7 +277,9 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     // the memory - which may move it.  Verify the integrity of the memory as
     // well.
     mHead = verifyIntegrity (vPtr);
+    MUTEX_LOCK (&g_mutex);
     LIST_REMOVE (mHead, doubleLinkedList);
+    MUTEX_UNLOCK (&g_mutex);
     if (mHead->szAllocator)
     {
       // delete string to who allocated it
@@ -221,17 +303,23 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     switch (type)
     {
     case REALLOC:
+      MUTEX_LOCK (&g_mutex);
       gi_allocCount += (vPtr==NULL) ? 1 : 0;
+      MUTEX_UNLOCK (&g_mutex);
       printf ("realloc (%p, %zu) = %p, allocated by %s, %d\n",
 	      vPtr, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
     case MALLOC:
+      MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
+      MUTEX_UNLOCK (&g_mutex);
       printf ("malloc (%zu) = %p, allocated by %s, %d\n",
 	      size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
     case CALLOC:
+      MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
+      MUTEX_UNLOCK (&g_mutex);
       printf ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
 	      nmemb, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
@@ -244,13 +332,18 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   // on the memory at the bottom and top of memory
   mHead->szAllocator = szCaller;
   mHead->size = size;
+  mHead->threadId = pthread_self ();
+  MUTEX_LOCK (&g_mutex);
   LIST_INSERT_HEAD(&gp_listHead, mHead, doubleLinkedList);
+  MUTEX_UNLOCK (&g_mutex);
   mHead->ullFixedValues[0] = 0xDEADBEEFCACAFECEULL;
   mHead->ullFixedValues[1] = 0xDEADBEEFCACAFECEULL;
 
   // point to usable memory
   ucPtr = ((unsigned char *)mHead) + (sizeof (struct memoryHeader));
-  for (s = size ; ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long)); s++)
+  for (s = size ;
+       ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long));
+       s++)
   {
     ucPtr[s] = (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF);
   }
@@ -274,15 +367,20 @@ static void internalFree (void *vPtr, int iLen)
 
   szAllocator = mHead->szAllocator;
 
+  MUTEX_LOCK (&g_mutex);
   LIST_REMOVE (mHead, doubleLinkedList);
+  MUTEX_UNLOCK (&g_mutex);
   gp_orgFree (mHead);
 
   if (!gi_hookDisabled)
   {
     gi_hookDisabled = 1;
     szCaller = trace (iLen, 1);
-    printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n", vPtr, szAllocator, szCaller, gi_allocCount);
+    printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n",
+	    vPtr, szAllocator, szCaller, gi_allocCount);
+    MUTEX_LOCK (&g_mutex);
     gi_allocCount--;
+    MUTEX_UNLOCK (&g_mutex);
 
     if (szCaller != NULL)
     {
@@ -294,11 +392,6 @@ static void internalFree (void *vPtr, int iLen)
     }
     gi_hookDisabled = 0;  
   }
-}
-
-int getAllocCount (void)
-{
-  return gi_allocCount;
 }
 
 void *malloc (size_t size)
