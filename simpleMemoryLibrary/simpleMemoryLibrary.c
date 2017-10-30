@@ -3,6 +3,10 @@
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl -pthread
 //
+// NOTE: It's not safe to allocate from one thread and free from another
+//       with this library, currently.  I'll eventually implement a mutex
+//       to take care of this.
+//
 // This library over-rides malloc(3), realloc(3), calloc(3), and the free(3)
 // functions in order to detect memory leaks, and memory over-runs.  All
 // allocations and frees are reported to stdout.
@@ -10,10 +14,10 @@
 // This should be light enough to leave in a final build.
 //
 // Additional functions available:
-//   showAllocations (void) - shows what's currently allocated
+//   showAllocations (FILE *fp) - shows what's currently allocated
 //
-// Note that printf(3) makes use of malloc(3) which requires the need NOT
-// to track memory used internally by glibc.
+// Note that printf(3) makes use of malloc(3) which requires the need to 
+// NOT track memory used internally by glibc while in these functions.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,10 +47,10 @@ struct memoryCap
 
 static __thread int gi_hookDisabled=0;
 static __thread int gi_allocCount=0;
-static void * (*orgMalloc)  (size_t size)              = NULL;
-static void   (*orgFree)    (void *ptr)                = NULL;
-static void * (*orgCalloc)  (size_t nmeb, size_t size) = NULL;
-static void * (*orgRealloc) (void *ptr, size_t size)   = NULL;
+static void * (*gp_orgMalloc)  (size_t size)              = NULL;
+static void   (*gp_orgFree)    (void *ptr)                = NULL;
+static void * (*gp_orgCalloc)  (size_t nmeb, size_t size) = NULL;
+static void * (*gp_orgRealloc) (void *ptr, size_t size)   = NULL;
 
 void static init (void) __attribute__((constructor)); // initialize this library
 void static end  (void) __attribute__((destructor));  // check for any outstanding allocs
@@ -54,61 +58,49 @@ void static end  (void) __attribute__((destructor));  // check for any outstandi
 static void init (void)
 {
   // only realloc and free are actually used, but I keep pointers to all
-  orgMalloc  = dlsym (RTLD_NEXT, "malloc");
-  orgFree    = dlsym (RTLD_NEXT, "free");
-  orgCalloc  = dlsym (RTLD_NEXT, "calloc");
-  orgRealloc = dlsym (RTLD_NEXT, "realloc");
+  gp_orgMalloc  = dlsym (RTLD_NEXT, "malloc");
+  gp_orgFree    = dlsym (RTLD_NEXT, "free");
+  gp_orgCalloc  = dlsym (RTLD_NEXT, "calloc");
+  gp_orgRealloc = dlsym (RTLD_NEXT, "realloc");
 
   LIST_INIT (&gp_listHead);
 }
 
-static void end (void)
+void showAllocations (FILE *fp)
 {
-  if (gi_allocCount != 0)
+  struct memoryHeader *ml;
+  int iCount=0;
+  
+  for (ml = gp_listHead.lh_first ; ml != NULL ; ml = ml->doubleLinkedList.le_next)
   {
-    struct memoryHeader *ml;
-
-    printf ("%d allocations detected on exit\n", gi_allocCount);
-    for (ml = gp_listHead.lh_first ; ml != NULL ; ml = ml->doubleLinkedList.le_next)
+    if (ml->szAllocator != NULL)
     {
-      if (ml->szAllocator != NULL)
+      if (iCount++==0)
       {
-	printf ("  Not freed: %p size of %zu, allocated by \"%s\"\n",
-		ml->ullFixedValues+2, ml->size, ml->szAllocator);
+	// create a header
+	fprintf (fp, "\n");
+	int iLen = fprintf (fp, "%d block%s remain%s allocated\n",
+			    gi_allocCount, gi_allocCount > 1 ? "s":"" , gi_allocCount > 1 ? "":"s");
+	while (--iLen > 0)
+	{
+	  fprintf (fp, "-");
+	}
+	fprintf (fp, "\n");
       }
+      fprintf (fp, "  Address %p size of %zu, allocated by \"%s\"\n",
+	       ml->ullFixedValues+2, ml->size, ml->szAllocator);
     }
+  }
+
+  if (iCount != 0)
+  {
+    fprintf (fp, "\n");
   }
 }
 
-void showAllocations (void)
+static void end (void)
 {
-  struct memoryHeader *ml;
-  int iLen;
-  
-  iLen = printf ("%d blocks allocated\n", gi_allocCount);
-  for (ml = gp_listHead.lh_first ; ml != NULL ; ml = ml->doubleLinkedList.le_next)
-  {
-    if (ml == gp_listHead.lh_first)
-    {
-      // create an underline.
-      while (iLen-- > 0)
-      {
-	printf ("-");
-      }
-      printf ("\n");
-    }
-
-    if (ml->szAllocator != NULL)
-    {
-      printf ("  Address %p size of %zu, allocated by \"%s\"\n",
-	      ml->ullFixedValues+2, ml->size, ml->szAllocator);
-    }
-  }
-
-  if (gi_allocCount != 0)
-  {
-    printf ("\n");
-  }
+  showAllocations (stderr);
 }
 
 static char *trace (int iLen, unsigned ucGetPtr)
@@ -206,8 +198,16 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     // well.
     mHead = verifyIntegrity (vPtr);
     LIST_REMOVE (mHead, doubleLinkedList);
+    if (mHead->szAllocator)
+    {
+      // delete string to who allocated it
+      int iHookState = gi_hookDisabled;
+      gi_hookDisabled = 1;
+      free (mHead->szAllocator);
+      gi_hookDisabled = iHookState;
+    }
   }
-  mHead = (struct memoryHeader *)orgRealloc (mHead, adjSize);
+  mHead = (struct memoryHeader *)gp_orgRealloc (mHead, adjSize);
   if (mHead == NULL)
   {
     return NULL;
@@ -217,24 +217,25 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   {
     gi_hookDisabled = 1;
 
-    if (vPtr == NULL)
-    {
-      gi_allocCount++;
-    }
-
+    szCaller = trace (4, 1);
     switch (type)
     {
     case REALLOC:
-      printf ("realloc (%p, %zu) = %p, %d\n", vPtr, size, &mHead->ullFixedValues[2], gi_allocCount);
+      gi_allocCount += (vPtr==NULL) ? 1 : 0;
+      printf ("realloc (%p, %zu) = %p, allocated by %s, %d\n",
+	      vPtr, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
     case MALLOC:
-      printf ("malloc (%zu) = %p, %d\n", size, &mHead->ullFixedValues[2], gi_allocCount);
+      gi_allocCount++;
+      printf ("malloc (%zu) = %p, allocated by %s, %d\n",
+	      size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
     case CALLOC:
-      printf ("calloc (%zu, %zu) = %p, %d\n", nmemb, size, &mHead->ullFixedValues[2], gi_allocCount);
+      gi_allocCount++;
+      printf ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
+	      nmemb, size, &mHead->ullFixedValues[2], szCaller, gi_allocCount);
       break;
     }
-    szCaller = trace (4, 1);
     gi_hookDisabled = 0;
   }
 
@@ -268,13 +269,13 @@ static void internalFree (void *vPtr, int iLen)
   char *szCaller=NULL;
   char *szAllocator=NULL;
 
-  // verify not over-runs in data
+  // verify no over-runs in data
   mHead = verifyIntegrity (vPtr);
 
   szAllocator = mHead->szAllocator;
 
   LIST_REMOVE (mHead, doubleLinkedList);
-  orgFree (mHead);
+  gp_orgFree (mHead);
 
   if (!gi_hookDisabled)
   {
@@ -324,7 +325,7 @@ void *calloc(size_t nmemb, size_t size)
 {
   void *vPtr;
 
-  if (orgCalloc == NULL)
+  if (gp_orgCalloc == NULL)
   {
     // This is a hack when compiling with -pthread.  Calloc(3) is used
     // by dlsym(3) when -pthread is used.  Since we need dlsym(3) to
@@ -353,4 +354,3 @@ void free(void *vPtr)
     internalFree (vPtr, 4);
   }
 }
-
