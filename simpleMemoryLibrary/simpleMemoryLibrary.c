@@ -23,7 +23,12 @@
 //
 // This code is based off from this presentation:
 //    https://www.slideshare.net/tetsu.koba/tips-of-malloc-free
-
+//
+// You might want to install these man pages for pthreads.  This is a note for
+// myself in the future - I had a devil of a time finding these
+//
+//   sudo apt-get install manpages-posix manpages-posix-dev
+//   sudo apt-get install glibc-doc
 #include <stdio.h>
 #include <stdlib.h>
 #include <execinfo.h>
