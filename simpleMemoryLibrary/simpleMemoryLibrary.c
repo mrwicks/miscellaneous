@@ -3,20 +3,20 @@
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl -pthread
 //
-// NOTE: It's not safe to allocate from one thread and free from another
-//       with this library, currently.  I'll eventually implement a mutex
-//       to take care of this.
-//
 // This library over-rides malloc(3), realloc(3), calloc(3), and the free(3)
 // functions in order to detect memory leaks, and memory over-runs.  All
 // allocations and frees are reported to stdout.
 //
+// This supports pthread - if you aren't using pthreads, just disable the
+// #include of pthread.h to compile out mutexes and to remove PID tracking
+//
 // This should be light enough to leave in a final build.
 //
 // Additional functions available:
-//   void showAllocations (FILE *fp) - shows what's currently allocated
-//   int getAllocCount (void) - get the # of allocations
-//   size_t getUsage (void) - total amount of memory allocated
+//   void mem_show_allocations (FILE *fp) - shows what's currently allocated
+//   int mem_get_alloc_count (void) - get the # of allocations
+//   size_t mem_get_usage (void) - amount of memory allocated by the callers
+//   size_t mem_get_real_usage (void) - mem_get_usage() + all over-head
 //
 // Note that printf(3) makes use of malloc(3) which requires the need to 
 // NOT track memory used internally by glibc while in these functions.
@@ -29,18 +29,22 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/queue.h>
+#include <pthread.h>
 
 #define __USE_GNU 1
 #include <dlfcn.h>
-#include <pthread.h>
+
+#include "simpleMemoryLibrary.h"
 
 LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
 {
   char *szAllocator;
   size_t size;
+#ifdef _PTHREAD_H
   pthread_t threadId;
-  LIST_ENTRY (memoryHeader) doubleLinkedList;
+#endif //_PTHREAD_H
+  LIST_ENTRY (memoryHeader) doubleLL;
   unsigned long long ullFixedValues[2];
 };
 
@@ -49,10 +53,12 @@ struct memoryCap
   unsigned long long ullFixedValues[2];
 };
 
+#ifdef _PTHREAD_H
 pthread_mutex_t g_mutex;
+#endif //_PTHREAD_H
 
-static int gi_allocCount=0;
 static __thread int gi_hookDisabled=0;
+static int gi_allocCount=0;
 static void * (*gp_orgMalloc)  (size_t size)              = NULL;
 static void   (*gp_orgFree)    (void *ptr)                = NULL;
 static void * (*gp_orgCalloc)  (size_t nmeb, size_t size) = NULL;
@@ -61,45 +67,54 @@ static void * (*gp_orgRealloc) (void *ptr, size_t size)   = NULL;
 void static init (void) __attribute__((constructor)); // initialize this library
 void static end  (void) __attribute__((destructor));  // check for any outstanding allocs
 
-#define MUTEX_INIT(mp)                                    \
-do                                                        \
-{                                                         \
-  if (pthread_mutex_init(mp,NULL) != 0)                   \
-  {                                                       \
-    perror("pthread_mutex_init");                         \
-    exit(EXIT_FAILURE);                                   \
-  }                                                       \
+#ifdef _PTHREAD_H
+
+#define MUTEX_INIT(mp)                  \
+do                                      \
+{                                       \
+  if (pthread_mutex_init(mp,NULL) != 0) \
+  {                                     \
+    perror("pthread_mutex_init");       \
+    exit(EXIT_FAILURE);                 \
+  }                                     \
 } while (0)
 
-#define MUTEX_LOCK(mp)                                    \
-do                                                        \
-{                                                         \
-  if (pthread_mutex_lock(mp) != 0)                        \
-  {                                                       \
-    perror("pthread_mutex_lock");                         \
-    exit(EXIT_FAILURE);                                   \
-  }                                                       \
+#define MUTEX_LOCK(mp)                  \
+do                                      \
+{                                       \
+  if (pthread_mutex_lock(mp) != 0)      \
+  {                                     \
+    perror("pthread_mutex_lock");       \
+    exit(EXIT_FAILURE);                 \
+  }                                     \
 } while (0)
 
-#define MUTEX_UNLOCK(mp)                                  \
-do                                                        \
-{                                                         \
-  if (pthread_mutex_unlock(mp) != 0)                      \
-  {                                                       \
-    perror("pthread_mutex_unlock");                       \
-    exit(EXIT_FAILURE);                                   \
-  }                                                       \
+#define MUTEX_UNLOCK(mp)                \
+do                                      \
+{                                       \
+  if (pthread_mutex_unlock(mp) != 0)    \
+  {                                     \
+    perror("pthread_mutex_unlock");     \
+    exit(EXIT_FAILURE);                 \
+  }                                     \
 } while (0)
 
-#define MUTEX_DESTROY(mp)                                 \
-do                                                        \
-{                                                         \
-  if (pthread_mutex_destroy(mp) != 0)                     \
-  {                                                       \
-    perror("pthread_mutex_destroy");                      \
-    exit(EXIT_FAILURE);                                   \
-  }                                                       \
+#define MUTEX_DESTROY(mp)               \
+do                                      \
+{                                       \
+  if (pthread_mutex_destroy(mp) != 0)   \
+  {                                     \
+    perror("pthread_mutex_destroy");    \
+    exit(EXIT_FAILURE);                 \
+  }                                     \
 } while (0)
+
+#else //! _PTHREAD_H
+#define MUTEX_INIT(mp)
+#define MUTEX_LOCK(mp)
+#define MUTEX_UNLOCK(mp)
+#define MUTEX_DESTROY(mp)
+#endif //_PTHREAD_H
 
 static void init (void)
 {
@@ -113,12 +128,12 @@ static void init (void)
   LIST_INIT (&gp_listHead);
 }
 
-int getAllocCount (void)
+int mem_get_alloc_count (void)
 {
   return gi_allocCount;
 }
 
-size_t getUsage (void)
+size_t mem_get_usage (void)
 {
   struct memoryHeader *ml;
   size_t size=0;
@@ -126,7 +141,7 @@ size_t getUsage (void)
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
-       ml = ml->doubleLinkedList.le_next)
+       ml = ml->doubleLL.le_next)
   {
     if (ml->szAllocator != NULL)
     {
@@ -138,7 +153,24 @@ size_t getUsage (void)
   return size;
 }
 
-void showAllocations (FILE *fp)
+size_t mem_get_real_usage (void)
+{
+  struct memoryHeader *ml;
+  size_t size=0;
+ 
+  MUTEX_LOCK (&g_mutex);
+  for (ml = gp_listHead.lh_first ;
+       ml != NULL ;
+       ml = ml->doubleLL.le_next)
+  {
+    size += ml->size + sizeof(struct memoryHeader) + sizeof(struct memoryCap);
+  }
+  MUTEX_UNLOCK (&g_mutex);
+
+  return size;
+}
+
+void mem_show_allocations (FILE *fp)
 {
   struct memoryHeader *ml;
   int iCount=0;
@@ -146,7 +178,7 @@ void showAllocations (FILE *fp)
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
-       ml = ml->doubleLinkedList.le_next)
+       ml = ml->doubleLL.le_next)
   {
     if (ml->szAllocator != NULL)
     {
@@ -177,7 +209,7 @@ void showAllocations (FILE *fp)
 
 static void end (void)
 {
-  showAllocations (stderr);
+  mem_show_allocations (stderr);
   MUTEX_DESTROY (&g_mutex);
 }
 
@@ -278,7 +310,7 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     // well.
     mHead = verifyIntegrity (vPtr);
     MUTEX_LOCK (&g_mutex);
-    LIST_REMOVE (mHead, doubleLinkedList);
+    LIST_REMOVE (mHead, doubleLL);
     MUTEX_UNLOCK (&g_mutex);
     if (mHead->szAllocator)
     {
@@ -332,9 +364,11 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   // on the memory at the bottom and top of memory
   mHead->szAllocator = szCaller;
   mHead->size = size;
+#ifdef _PTHREAD_H
   mHead->threadId = pthread_self ();
+#endif //_PTHREAD_H
   MUTEX_LOCK (&g_mutex);
-  LIST_INSERT_HEAD(&gp_listHead, mHead, doubleLinkedList);
+  LIST_INSERT_HEAD(&gp_listHead, mHead, doubleLL);
   MUTEX_UNLOCK (&g_mutex);
   mHead->ullFixedValues[0] = 0xDEADBEEFCACAFECEULL;
   mHead->ullFixedValues[1] = 0xDEADBEEFCACAFECEULL;
@@ -368,7 +402,7 @@ static void internalFree (void *vPtr, int iLen)
   szAllocator = mHead->szAllocator;
 
   MUTEX_LOCK (&g_mutex);
-  LIST_REMOVE (mHead, doubleLinkedList);
+  LIST_REMOVE (mHead, doubleLL);
   MUTEX_UNLOCK (&g_mutex);
   gp_orgFree (mHead);
 
