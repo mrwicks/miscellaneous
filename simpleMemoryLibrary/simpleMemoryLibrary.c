@@ -17,6 +17,7 @@
 //   int mem_get_alloc_count (void) - get the # of allocations
 //   size_t mem_get_usage (void) - amount of memory allocated by the callers
 //   size_t mem_get_real_usage (void) - mem_get_usage() + all over-head
+//   void mem_check_integrity (void) - check memory integrity bands
 //
 // Note that printf(3) makes use of malloc(3) which requires the need to 
 // NOT track memory used internally by glibc while in these functions.
@@ -235,8 +236,8 @@ void mem_show_allocations (FILE *fp)
 	fprintf (fp, "\n");
       }
       fprintf (fp, "  Address %p size of %zu, allocated by \"%s\"\n",
-	       ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size, ml->szAllocator);
-//      fprintf (fp, "  %-11s\n", (char*)(ml->ullFixedValues+MEM_HEADER_GUARD_LEN));
+	       ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size,
+	       ml->szAllocator);
     }
   }
 
@@ -385,9 +386,11 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
         MUTEX_UNLOCK (&g_mutex);
       }
       printf ("realloc (%p, %zu) = %p, allocated by %s (org: %s) %d\n",
-	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, szAllocator, gi_allocCount);
+	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN],
+	      szCaller, szAllocator, gi_allocCount);
       if (szAllocator != NULL)
       {
+	// free the string to the old allocator
         free (szAllocator);
       }
       break;
@@ -396,14 +399,16 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
       printf ("malloc (%zu) = %p, allocated by %s, %d\n",
-	      size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
+	      size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN],
+	      szCaller, gi_allocCount);
       break;
     case CALLOC:
       MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
       printf ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
-	      nmemb, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
+	      nmemb, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN],
+	      szCaller, gi_allocCount);
       break;
     }
     gi_hookDisabled = 0;
