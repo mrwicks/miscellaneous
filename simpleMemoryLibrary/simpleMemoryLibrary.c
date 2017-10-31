@@ -45,7 +45,9 @@
 #include "simpleMemoryLibrary.h"
 
 #define MEM_HEADER_GUARD_LEN (2)
-#define MEM_CAP_GUARD_LEN (2)
+#define MEM_CAP_GUARD_LEN    (2)
+#define GUARD_BAND_BOTTOM    (0xCACAFECEDEADBEEF)
+#define GUARD_BAND_TOP       (0xBADC0DE8CACAFECE)
 
 LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
@@ -127,6 +129,13 @@ do                                      \
 #define MUTEX_DESTROY(mp)
 #endif //_PTHREAD_H
 
+static void init (void);
+static void end (void);
+static char *trace (int iLen, unsigned ucGetPtr);
+static struct memoryHeader *verifyIntegrity (void *vPtr);
+static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned char type);
+static void internalFree (void *vPtr, int iLen);
+
 static void init (void)
 {
   // only realloc and free are actually used, but I keep pointers to all
@@ -137,6 +146,11 @@ static void init (void)
   MUTEX_INIT (&g_mutex);
 
   LIST_INIT (&gp_listHead);
+
+  // printf allocates memory if it's the first thing printed unless we do
+  // an allocation, which causes a printf which allocates memory which is
+  // NOT tracked, because it happens within the malloc() function.
+  malloc (0);
 }
 
 int mem_get_alloc_count (void)
@@ -181,6 +195,20 @@ size_t mem_get_real_usage (void)
   return size;
 }
 
+void mem_check_integrity (void)
+{
+  struct memoryHeader *ml;
+ 
+  MUTEX_LOCK (&g_mutex);
+  for (ml = gp_listHead.lh_first ;
+       ml != NULL ;
+       ml = ml->doubleLL.le_next)
+  {
+    verifyIntegrity (&ml->ullFixedValues[MEM_HEADER_GUARD_LEN]);
+  }
+  MUTEX_UNLOCK (&g_mutex);
+}
+
 void mem_show_allocations (FILE *fp)
 {
   struct memoryHeader *ml;
@@ -198,8 +226,8 @@ void mem_show_allocations (FILE *fp)
 	// create a header
 	fprintf (fp, "\n");
 	int iLen = fprintf (fp, "%d block%s remain%s allocated\n",
-			    gi_allocCount, gi_allocCount > 1 ? "s":"" ,
-			    gi_allocCount > 1 ? "":"s");
+			    gi_allocCount, gi_allocCount != 1 ? "s":"" ,
+			    gi_allocCount == 1 ? "":"s");
 	while (--iLen > 0)
 	{
 	  fprintf (fp, "-");
@@ -207,7 +235,8 @@ void mem_show_allocations (FILE *fp)
 	fprintf (fp, "\n");
       }
       fprintf (fp, "  Address %p size of %zu, allocated by \"%s\"\n",
-	       ml->ullFixedValues+2, ml->size, ml->szAllocator);
+	       ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size, ml->szAllocator);
+//      fprintf (fp, "  %-11s\n", (char*)(ml->ullFixedValues+MEM_HEADER_GUARD_LEN));
     }
   }
 
@@ -221,6 +250,7 @@ void mem_show_allocations (FILE *fp)
 static void end (void)
 {
   mem_show_allocations (stderr);
+  mem_check_integrity ();
   MUTEX_DESTROY (&g_mutex);
 }
 
@@ -274,7 +304,7 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
 
   for (i = 0 ; i < MEM_HEADER_GUARD_LEN ; i++)
   {
-    assert (mHead->ullFixedValues[i] == 0xDEADBEEFCACAFECEULL);
+    assert (mHead->ullFixedValues[i] == GUARD_BAND_TOP);
   }
 
   ucPtr = ((unsigned char *) vPtr);
@@ -288,7 +318,7 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
 
   for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
   {
-    assert (mCap->ullFixedValues[i] == 0xCACAFECEDEADBEEFULL);
+    assert (mCap->ullFixedValues[i] == GUARD_BAND_BOTTOM);
   }
 
   return mHead;
@@ -305,6 +335,7 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   size_t adjSize;
   size_t s;
   char *szCaller = NULL;
+  char *szAllocator = NULL;
   int i;
 
   // NOTE: In this implementation, a size of 0 can be allocated
@@ -326,17 +357,10 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     // the memory - which may move it.  Verify the integrity of the memory as
     // well.
     mHead = verifyIntegrity (vPtr);
+    szAllocator = mHead->szAllocator;
     MUTEX_LOCK (&g_mutex);
     LIST_REMOVE (mHead, doubleLL);
     MUTEX_UNLOCK (&g_mutex);
-    if (mHead->szAllocator != NULL)
-    {
-      // delete string to who allocated it
-      int iHookState = gi_hookDisabled;
-      gi_hookDisabled = 1;
-      free (mHead->szAllocator);
-      gi_hookDisabled = iHookState;
-    }
   }
   mHead = (struct memoryHeader *)gp_orgRealloc (mHead, adjSize);
   if (mHead == NULL)
@@ -353,9 +377,19 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     {
     case REALLOC:
       // alloc count doesn't change - even if 0 size is being actually
-      // allocated
-      printf ("realloc (%p, %zu) = %p, allocated by %s, %d\n",
-	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
+      // allocated - unless vPtr == NULL
+      if (vPtr == NULL)
+      {
+        MUTEX_LOCK (&g_mutex);
+        gi_allocCount++;
+        MUTEX_UNLOCK (&g_mutex);
+      }
+      printf ("realloc (%p, %zu) = %p, allocated by %s (org: %s) %d\n",
+	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, szAllocator, gi_allocCount);
+      if (szAllocator != NULL)
+      {
+        free (szAllocator);
+      }
       break;
     case MALLOC:
       MUTEX_LOCK (&g_mutex);
@@ -384,11 +418,13 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   mHead->threadId = pthread_self ();
 #endif //_PTHREAD_H
   MUTEX_LOCK (&g_mutex);
+  mHead->doubleLL.le_next = NULL;
+  mHead->doubleLL.le_prev = NULL;
   LIST_INSERT_HEAD(&gp_listHead, mHead, doubleLL);
   MUTEX_UNLOCK (&g_mutex);
   for (i = 0 ; i < MEM_HEADER_GUARD_LEN ; i++)
   {
-    mHead->ullFixedValues[i] = 0xDEADBEEFCACAFECEULL;
+    mHead->ullFixedValues[i] = GUARD_BAND_TOP;
   }
 
   // point to usable memory
@@ -404,17 +440,18 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   mCap = (struct memoryCap *)(ucPtr + s);
   for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
   {
-    mCap->ullFixedValues[i] = 0xCACAFECEDEADBEEFULL;
+    mCap->ullFixedValues[i] = GUARD_BAND_BOTTOM;
   }
 
-  return ucPtr;
+  vPtr = ucPtr;
+  return vPtr;
 }
 
 static void internalFree (void *vPtr, int iLen)
 {
   struct memoryHeader *mHead;
-  char *szCaller=NULL;
-  char *szAllocator=NULL;
+  char *szCaller = NULL;
+  char *szAllocator = NULL;
 
   // verify no over-runs in data
   mHead = verifyIntegrity (vPtr);
@@ -430,8 +467,11 @@ static void internalFree (void *vPtr, int iLen)
   {
     gi_hookDisabled = 1;
     szCaller = trace (iLen, 1);
-    printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n",
-	    vPtr, szAllocator, szCaller, gi_allocCount);
+    if (szAllocator != NULL)
+    {
+      printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n",
+              vPtr, szAllocator, szCaller, gi_allocCount);
+    }
     MUTEX_LOCK (&g_mutex);
     gi_allocCount--;
     MUTEX_UNLOCK (&g_mutex);
@@ -483,7 +523,7 @@ void *calloc(size_t nmemb, size_t size)
     vPtr = internalRealloc (NULL, nmemb, size, CALLOC);
   }
   
-  bzero (vPtr, size);
+  bzero (vPtr, nmemb*size);
   return vPtr;
 }
 
