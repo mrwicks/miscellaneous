@@ -47,8 +47,8 @@
 
 #define MEM_HEADER_GUARD_LEN (2)
 #define MEM_CAP_GUARD_LEN    (2)
-#define GUARD_BAND_BOTTOM    (0xCACAFECEDEADBEEF)
-#define GUARD_BAND_TOP       (0xBADC0DE8CACAFECE)
+#define GUARD_BAND_BOTTOM    (0xDEADBEEFCAFEF00D)
+#define GUARD_BAND_TOP       (0x0CACAFECEBADC0DE)
 
 LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
@@ -561,21 +561,53 @@ static void internalFree (void *vPtr, int iLen)
 
 void *malloc (size_t size)
 {
+  void *vPtr;
+  
   if (gp_orgMalloc == NULL)
   {
     // C++ requires this.
-    static __thread unsigned long long ullStatic[0x1200];
-    return ullStatic;
+    static __thread unsigned long long ullStatic[0x3000];
+    static __thread size_t sIndex = 0;
+    unsigned long long *ullRet;
+    
+    ullRet = &ullStatic[sIndex];
+
+    // find next spot to "allocate" until gp_orgMalloc is set in case
+    // of multiple requests
+    sIndex += 1 + (size / sizeof(ullStatic[0]));
+
+    if (sIndex > sizeof (ullStatic))
+    {
+      // if we hit this, we have allocated more memory on startup than
+      // we made available, make ullStatic larger
+      abort ();
+    }
+    vPtr = ullRet;
   }
-  return internalRealloc (NULL, size, 1, MALLOC);
+  else
+  {
+    vPtr = internalRealloc (NULL, size, 1, MALLOC);
+  }
+
+  return vPtr;
 }
 
 void *realloc(void *vPtr, size_t size)
 {
+  if (gp_orgRealloc == NULL)
+  {
+    // if we hit this, some library that was called before this
+    // library's init() was called.  You'll have to go through a
+    // debugger to see what request is being made and then write
+    // the appropriate code.
+    abort ();
+  }
+  
   // you can free memory with realloc, if you pass 0 size, with a
   // non NULL pointer however, I can see in the realloc(3) implementation
   // under linux, this will return a pointer which you can free, so
-  // we will allocate 0 size
+  // I alloc an allocation of 0 size, which returns a block of memory
+  // that has no space to write to.
   return internalRealloc (vPtr, size, 1, REALLOC);
 }
 
@@ -585,15 +617,26 @@ void *calloc(size_t nmemb, size_t size)
 
   if (gp_orgCalloc == NULL)
   {
-    // This is a hack when compiling with -pthread.  Calloc(3) is used
-    // by dlsym(3) when -pthread is used.  Since we need dlsym(3) to
-    // get the pointer to the allocation functions, I just return
-    // a 4KB space statically allocated.  Calloc(3) does not free this
-    // memory anyhow.  The amount of memory used is actually small
-    // but I use 4KB for any future changes in glibc
-    static __thread unsigned long long fakePtr[512];
-    vPtr = fakePtr;
-    assert (size <= sizeof(fakePtr));
+    // When compiling against -pthread, calloc() is called by dlsym(3)
+    // but we need dlsym(3) to get the pointers to glib's functions
+    // like calloc() - we we return some statically allocated memory.
+    static __thread unsigned long long ullStatic[0x80];
+    static __thread size_t sIndex = 0;
+    unsigned long long *ullRet;
+
+    ullRet = &ullStatic[sIndex];
+
+    // find next spot to "allocate" until gp_orgMalloc is set in case
+    // of multiple requests
+    sIndex += 1 + ((size*nmemb) / sizeof (ullStatic[0]));
+
+    if (sIndex > sizeof (ullStatic))
+    {
+      // if we hit this, we have allocated more memory on startup than
+      // we made available, make ullStatic larger
+      abort ();
+    }
+    vPtr = ullRet;
   }
   else
   {
