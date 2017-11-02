@@ -140,10 +140,10 @@ static void internalFree (void *vPtr, int iLen);
 static void init (void)
 {
   // only realloc and free are actually used, but I keep pointers to all
-  gp_orgMalloc  = dlsym (RTLD_NEXT, "malloc");
-  gp_orgFree    = dlsym (RTLD_NEXT, "free");
-  gp_orgCalloc  = dlsym (RTLD_NEXT, "calloc");
-  gp_orgRealloc = dlsym (RTLD_NEXT, "realloc");
+  gp_orgMalloc  = (void* (*)(long unsigned int)) dlsym (RTLD_NEXT, "malloc");
+  gp_orgFree    = (void  (*)(void*)) dlsym (RTLD_NEXT, "free");
+  gp_orgCalloc  = (void* (*)(long unsigned int, long unsigned int)) dlsym (RTLD_NEXT, "calloc");
+  gp_orgRealloc = (void* (*)(void*, long unsigned int)) dlsym (RTLD_NEXT, "realloc");
   MUTEX_INIT (&g_mutex);
 
   LIST_INIT (&gp_listHead);
@@ -151,7 +151,7 @@ static void init (void)
   // printf allocates memory if it's the first thing printed unless we do
   // an allocation, which causes a printf which allocates memory which is
   // NOT tracked, because it happens within the malloc() function.
-  malloc (0);
+//  malloc (0);
 }
 
 int mem_get_alloc_count (void)
@@ -369,7 +369,7 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   int i;
 
   // adjust pointer to the actual start of allocation
-  mHead = (struct memoryHeader *)(vPtr - sizeof(struct memoryHeader));
+  mHead = (struct memoryHeader *)((char *)vPtr - sizeof(struct memoryHeader));
 
   size = mHead->size;
 
@@ -561,6 +561,12 @@ static void internalFree (void *vPtr, int iLen)
 
 void *malloc (size_t size)
 {
+  if (gp_orgMalloc == NULL)
+  {
+    // C++ requires this.
+    static __thread unsigned long long ullStatic[0x1200];
+    return ullStatic;
+  }
   return internalRealloc (NULL, size, 1, MALLOC);
 }
 
