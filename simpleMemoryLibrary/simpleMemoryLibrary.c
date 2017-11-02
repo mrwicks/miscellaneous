@@ -17,6 +17,7 @@
 //   int mem_get_alloc_count (void) - get the # of allocations
 //   size_t mem_get_usage (void) - amount of memory allocated by the callers
 //   size_t mem_get_real_usage (void) - mem_get_usage() + all over-head
+//   void mem_check_integrity (void) - check all the boundaries
 //
 // Note that printf(3) makes use of malloc(3) which requires the need to 
 // NOT track memory used internally by glibc while in these functions.
@@ -254,14 +255,63 @@ static void end (void)
   MUTEX_DESTROY (&g_mutex);
 }
 
+static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax)
+{
+  size_t sSrc;
+  size_t sDst=sOffset;
+  int iMode=0;
+
+  for (sSrc = 0 ; szSrc[sSrc] != '\0' ; sSrc++)
+  {
+    if (sDst == sMax)
+    {
+      szDst[sMax-1] = '\0';
+      
+      break;
+    }
+    
+    switch (szSrc[sSrc])
+    {
+    case '(' :
+      iMode = 1;
+      break;
+    case '\0' :
+    case ')' :
+      iMode = 2;
+      if (sDst < sMax)
+      {
+        szDst[sDst++] = '<';
+      }
+      if (sDst < sMax)
+      {
+        szDst[sDst++] = '<';
+      }
+      if (sDst < sMax)
+      {
+        szDst[sDst++] = '-';
+      }
+      break;
+    default:
+      if (iMode == 1 && sDst < sMax)
+      {
+        szDst[sDst++] = szSrc[sSrc];
+      }
+    }
+  }
+
+  
+
+  return sDst;
+}
+
 static char *trace (int iLen, unsigned ucGetPtr)
 {
   int nptrs;
   char **strings;
-  void *buffer[iLen];
+  void *buffer[200];
   char *szPtr=NULL;
- 
-  nptrs = backtrace(buffer, iLen);
+
+  nptrs = backtrace(buffer, sizeof(buffer)/sizeof(buffer[0]));
   
   strings = backtrace_symbols(buffer, nptrs);
   if (strings == NULL)
@@ -278,9 +328,30 @@ static char *trace (int iLen, unsigned ucGetPtr)
       printf("TRACE> %s\n", strings[j]);
     }
   }
-  else if (nptrs == iLen)
+  else
   {
-    szPtr = strdup (strings[nptrs-1]);
+    const size_t maxSize = 1024;
+    int i;
+    size_t sPos = 0;
+
+    szPtr = (char *)realloc (szPtr, maxSize);
+    assert (szPtr != NULL);
+    for (i = iLen-1; i < nptrs; i++)
+    {
+      sPos = getFunction (szPtr, sPos, strings[i], maxSize);
+    }
+
+    if (sPos != 0)
+    {
+      szPtr[sPos-3] = '\0';
+      szPtr = (char *)realloc (szPtr, sPos-2);
+    }
+    else
+    {
+      // this should never happen..
+      free (szPtr);
+      szPtr = NULL;
+    }
   }
 
   free(strings);
