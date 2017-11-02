@@ -568,21 +568,19 @@ void *malloc (size_t size)
     // C++ requires this.
     static __thread unsigned long long ullStatic[0x3000];
     static __thread size_t sIndex = 0;
-    unsigned long long *ullRet;
     
-    ullRet = &ullStatic[sIndex];
+    vPtr = &ullStatic[sIndex];
 
     // find next spot to "allocate" until gp_orgMalloc is set in case
     // of multiple requests
     sIndex += 1 + (size / sizeof(ullStatic[0]));
 
-    if (sIndex > sizeof (ullStatic))
+    if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
     {
       // if we hit this, we have allocated more memory on startup than
       // we made available, make ullStatic larger
       abort ();
     }
-    vPtr = ullRet;
   }
   else
   {
@@ -622,21 +620,19 @@ void *calloc(size_t nmemb, size_t size)
     // like calloc() - we we return some statically allocated memory.
     static __thread unsigned long long ullStatic[0x80];
     static __thread size_t sIndex = 0;
-    unsigned long long *ullRet;
 
-    ullRet = &ullStatic[sIndex];
+    vPtr = &ullStatic[sIndex];
 
     // find next spot to "allocate" until gp_orgMalloc is set in case
     // of multiple requests
     sIndex += 1 + ((size*nmemb) / sizeof (ullStatic[0]));
 
-    if (sIndex > sizeof (ullStatic))
+    if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
     {
       // if we hit this, we have allocated more memory on startup than
       // we made available, make ullStatic larger
       abort ();
     }
-    vPtr = ullRet;
   }
   else
   {
