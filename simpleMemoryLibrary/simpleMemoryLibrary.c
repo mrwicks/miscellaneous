@@ -40,7 +40,9 @@
 #include <sys/queue.h>
 #include <pthread.h>
 
+#ifndef __USE_GNU
 #define __USE_GNU 1
+#endif
 #include <dlfcn.h>
 
 #include "simpleMemoryLibrary.h"
@@ -148,10 +150,10 @@ static void init (void)
 
   LIST_INIT (&gp_listHead);
 
-  // printf allocates memory if it's the first thing printed unless we do
-  // an allocation, which causes a printf which allocates memory which is
-  // NOT tracked, because it happens within the malloc() function.
-//  malloc (0);
+  // if your code is written properly, you should only see this one block
+  // when you exit - this is allocated to prevent you from seeing other
+  // internal allocates before your program begins.
+  malloc (0);
 }
 
 int mem_get_alloc_count (void)
@@ -169,6 +171,7 @@ size_t mem_get_usage (void)
        ml != NULL ;
        ml = ml->doubleLL.le_next)
   {
+    verifyIntegrity (ml+1);
     if (ml->szAllocator != NULL)
     {
       size += ml->size;
@@ -189,6 +192,7 @@ size_t mem_get_real_usage (void)
        ml != NULL ;
        ml = ml->doubleLL.le_next)
   {
+    verifyIntegrity (ml+1);
     size += ml->size + sizeof(struct memoryHeader) + sizeof(struct memoryCap);
   }
   MUTEX_UNLOCK (&g_mutex);
@@ -205,7 +209,7 @@ void mem_check_integrity (void)
        ml != NULL ;
        ml = ml->doubleLL.le_next)
   {
-    verifyIntegrity (&ml->ullFixedValues[MEM_HEADER_GUARD_LEN]);
+    verifyIntegrity (ml+1);
   }
   MUTEX_UNLOCK (&g_mutex);
 }
@@ -220,7 +224,8 @@ void mem_show_allocations (FILE *fp)
        ml != NULL ;
        ml = ml->doubleLL.le_next)
   {
-    if (ml->szAllocator != NULL)
+    verifyIntegrity (ml+1);
+    if (ml->szAllocator != NULL && ml->size != 0)
     {
       if (iCount++==0)
       {
@@ -237,13 +242,16 @@ void mem_show_allocations (FILE *fp)
       }
       fprintf (fp, "  Address %p size of %zu, allocated by \"%s\"\n",
 	       ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size, ml->szAllocator);
-//      fprintf (fp, "  %-11s\n", (char*)(ml->ullFixedValues+MEM_HEADER_GUARD_LEN));
     }
   }
 
   if (iCount != 0)
   {
     fprintf (fp, "\n");
+  }
+  else
+  {
+    fprintf (fp, "No memory allocations currently\n");
   }
   MUTEX_UNLOCK (&g_mutex);
 }
@@ -297,9 +305,7 @@ static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax
         szDst[sDst++] = szSrc[sSrc];
       }
     }
-  }
-
-  
+  }  
 
   return sDst;
 }
@@ -369,7 +375,7 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   int i;
 
   // adjust pointer to the actual start of allocation
-  mHead = (struct memoryHeader *)((char *)vPtr - sizeof(struct memoryHeader));
+  mHead = ((struct memoryHeader *)(vPtr))-1;
 
   size = mHead->size;
 
@@ -499,7 +505,7 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   }
 
   // point to usable memory
-  ucPtr = ((unsigned char *)mHead) + (sizeof (struct memoryHeader));
+  ucPtr = ((unsigned char *)(mHead+1));
   for (s = mHead->size ;
        ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long));
        s++)
@@ -637,8 +643,8 @@ void *calloc(size_t nmemb, size_t size)
   {
     vPtr = internalRealloc (NULL, nmemb, size, CALLOC);
   }
-  
-  bzero (vPtr, nmemb*size);
+
+  memset (vPtr, 0, nmemb*size);
   return vPtr;
 }
 
