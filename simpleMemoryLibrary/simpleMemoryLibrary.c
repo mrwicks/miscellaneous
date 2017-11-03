@@ -518,6 +518,33 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   return vPtr;
 }
 
+static void *internalStaticAlloc (size_t size)
+{
+  // glibc and C++ can make use of malloc and calloc before the init can be
+  // called.  When this happens we have to pass back some usable memory.
+  // This memory is not freed() on exit - at least currently.
+
+  // C++ allocates quite a large block of memory on startup..
+  static __thread unsigned long long ullStatic[0x3000];
+  static __thread size_t sIndex = 0;
+  void *vPtr;
+  
+  vPtr = &ullStatic[sIndex];
+  
+  // find next spot to "allocate" until init() can be called
+  // in case it happens multiple times
+  sIndex += (size + (sizeof(ullStatic[0])-1)) / sizeof (ullStatic[0]);
+  
+  if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
+  {
+    // if we hit this, we have allocated more memory on startup than
+    // we made available, make ullStatic larger
+    abort ();
+  }
+
+  return vPtr;
+}
+
 static void internalFree (void *vPtr, int iLen)
 {
   struct memoryHeader *mHead;
@@ -565,22 +592,8 @@ void *malloc (size_t size)
   
   if (gp_orgMalloc == NULL)
   {
-    // C++ requires this.
-    static __thread unsigned long long ullStatic[0x3000];
-    static __thread size_t sIndex = 0;
-    
-    vPtr = &ullStatic[sIndex];
-
-    // find next spot to "allocate" until gp_orgMalloc is set in case
-    // of multiple requests
-    sIndex += 1 + (size / sizeof(ullStatic[0]));
-
-    if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
-    {
-      // if we hit this, we have allocated more memory on startup than
-      // we made available, make ullStatic larger
-      abort ();
-    }
+    // C++ allocates memory before init() can be called in this module
+    vPtr = internalStaticAlloc (size);
   }
   else
   {
@@ -617,22 +630,8 @@ void *calloc(size_t nmemb, size_t size)
   {
     // When compiling against -pthread, calloc() is called by dlsym(3)
     // but we need dlsym(3) to get the pointers to glib's functions
-    // like calloc() - we we return some statically allocated memory.
-    static __thread unsigned long long ullStatic[0x80];
-    static __thread size_t sIndex = 0;
-
-    vPtr = &ullStatic[sIndex];
-
-    // find next spot to "allocate" until gp_orgMalloc is set in case
-    // of multiple requests
-    sIndex += 1 + ((size*nmemb) / sizeof (ullStatic[0]));
-
-    if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
-    {
-      // if we hit this, we have allocated more memory on startup than
-      // we made available, make ullStatic larger
-      abort ();
-    }
+    // like calloc() - we will return some statically allocated memory.
+    vPtr = internalStaticAlloc (nmemb * size);
   }
   else
   {
