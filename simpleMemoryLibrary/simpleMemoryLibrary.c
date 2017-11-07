@@ -18,9 +18,12 @@
 //   size_t mem_get_usage (void) - amount of memory allocated by the callers
 //   size_t mem_get_real_usage (void) - mem_get_usage() + all over-head
 //   void mem_check_integrity (void) - check all the boundaries
+//   void mem_ignore_current_allocations (void) - removes currently
+//      allocated blocks out of the linked list for tracking
 //
-// Note that printf(3) makes use of malloc(3) which requires the need to 
-// NOT track memory used internally by glibc while in these functions.
+// Glibc does internal allocations which it never frees, so you may see
+// some outstanding allocations when your code exits.  You can suppress
+// these with mem_ignore_current_allocations.
 //
 // This code is based off from this presentation:
 //    https://www.slideshare.net/tetsu.koba/tips-of-malloc-free
@@ -34,7 +37,6 @@
 #include <stdlib.h>
 #include <execinfo.h>
 #include <strings.h>
-#include <assert.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/queue.h>
@@ -47,10 +49,32 @@
 
 #include "simpleMemoryLibrary.h"
 
+#define ASSERT(v,...)                           \
+do                                              \
+{                                               \
+  unsigned int e = (unsigned int)errno;         \
+  if (!(v))                                     \
+  {                                             \
+    printf ("\n\nASSERT failure:\n");           \
+    printf ("File: %s\n", __FILE__);            \
+    printf ("Line: %d\n", __LINE__);            \
+    printf ("Fun : %s\n", __FUNCTION__);        \
+    printf ("Note: ");                          \
+    printf (__VA_ARGS__); printf ("\n");        \
+    printf ("failed expression: (%s)\n\n", #v); \
+    printf ("Errno (may not be relevant):\n");  \
+    printf ("  Number: 0x%08x\n", e);           \
+    printf ("  String: %s\n", strerror(e));     \
+    abort ();                                   \
+  }                                             \
+}                                               \
+while (0)
+
+
 #define MEM_HEADER_GUARD_LEN (2)
 #define MEM_CAP_GUARD_LEN    (2)
-#define GUARD_BAND_BOTTOM    (0xDEADBEEFCAFEF00D)
-#define GUARD_BAND_TOP       (0x0CACAFECEBADC0DE)
+#define GUARD_BAND_TOP       (0xDEADBEEFCAFEF00DULL)
+#define GUARD_BAND_BOTTOM    (0x0CACAFECEBADC0DEULL)
 
 LIST_HEAD (listHead, memoryHeader) gp_listHead;
 struct memoryHeader
@@ -83,11 +107,22 @@ static void * (*gp_orgRealloc) (void *ptr, size_t size)   = NULL;
 void static init (void) __attribute__((constructor)); // initialize this library
 void static end  (void) __attribute__((destructor));  // check for any outstanding allocs
 
+#if (defined SML_PRINTF && SML_PRINTF==1)
+#undef SML_PRINTF
+#define SML_PRINTF(...) printf (__VA_ARGS__)
+#else
+#define SML_PRINTF(...)
+#endif
+
 #ifdef _PTHREAD_H
 
 #define MUTEX_INIT(mp)                  \
 do                                      \
 {                                       \
+  if (gi_hookDisabled == 0)             \
+  {                                     \
+    SML_PRINTF ("MUTEX_INIT\n");        \
+  }                                     \
   if (pthread_mutex_init(mp,NULL) != 0) \
   {                                     \
     perror("pthread_mutex_init");       \
@@ -98,6 +133,10 @@ do                                      \
 #define MUTEX_LOCK(mp)                  \
 do                                      \
 {                                       \
+  if (gi_hookDisabled == 0)             \
+  {                                     \
+    SML_PRINTF ("MUTEX_LOCK\n");        \
+  }                                     \
   if (pthread_mutex_lock(mp) != 0)      \
   {                                     \
     perror("pthread_mutex_lock");       \
@@ -108,6 +147,10 @@ do                                      \
 #define MUTEX_UNLOCK(mp)                \
 do                                      \
 {                                       \
+  if (gi_hookDisabled == 0)             \
+  {                                     \
+    SML_PRINTF ("MUTEX_UNLOCK\n");      \
+  }                                     \
   if (pthread_mutex_unlock(mp) != 0)    \
   {                                     \
     perror("pthread_mutex_unlock");     \
@@ -118,6 +161,10 @@ do                                      \
 #define MUTEX_DESTROY(mp)               \
 do                                      \
 {                                       \
+  if (gi_hookDisabled == 0)             \
+  {                                     \
+    SML_PRINTF ("MUTEX_DESTROY\n");     \
+  }                                     \
   if (pthread_mutex_destroy(mp) != 0)   \
   {                                     \
     perror("pthread_mutex_destroy");    \
@@ -149,10 +196,6 @@ static void init (void)
   MUTEX_INIT (&g_mutex);
 
   LIST_INIT (&gp_listHead);
-
-  // if your code is written properly, you should only see this one block
-  // when you exit - this is allocated to prevent you from seeing other
-  // internal allocates before your program begins.
   malloc (0);
 }
 
@@ -165,7 +208,7 @@ size_t mem_get_usage (void)
 {
   struct memoryHeader *ml;
   size_t size=0;
- 
+
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
@@ -186,7 +229,7 @@ size_t mem_get_real_usage (void)
 {
   struct memoryHeader *ml;
   size_t size=0;
- 
+
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
@@ -203,7 +246,7 @@ size_t mem_get_real_usage (void)
 void mem_check_integrity (void)
 {
   struct memoryHeader *ml;
- 
+
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
@@ -214,11 +257,27 @@ void mem_check_integrity (void)
   MUTEX_UNLOCK (&g_mutex);
 }
 
+void mem_ignore_current_allocations (void)
+{
+  struct memoryHeader *ml;
+
+  MUTEX_LOCK (&g_mutex);
+  for (ml = gp_listHead.lh_first ;
+       ml != NULL ;
+       ml = ml->doubleLL.le_next)
+  {
+    LIST_REMOVE (ml, doubleLL);
+    ml->doubleLL.le_prev = NULL;
+  }
+  gi_allocCount = 0;
+  MUTEX_UNLOCK (&g_mutex);
+}
+
 void mem_show_allocations (FILE *fp)
 {
   struct memoryHeader *ml;
   int iCount=0;
-  
+
   MUTEX_LOCK (&g_mutex);
   for (ml = gp_listHead.lh_first ;
        ml != NULL ;
@@ -229,19 +288,18 @@ void mem_show_allocations (FILE *fp)
     {
       if (iCount++==0)
       {
-	// create a header
-	fprintf (fp, "\n");
-	int iLen = fprintf (fp, "%d block%s remain%s allocated\n",
-			    gi_allocCount, gi_allocCount != 1 ? "s":"" ,
-			    gi_allocCount == 1 ? "":"s");
-	while (--iLen > 0)
-	{
-	  fprintf (fp, "-");
-	}
-	fprintf (fp, "\n");
+        // write a header
+        fprintf (fp, "\n");
+        int iLen = fprintf (fp, "%d block%s remains allocated\n",
+                            gi_allocCount, gi_allocCount != 1 ? "s":"");
+        while (--iLen > 0)
+        {
+          fprintf (fp, "-");
+        }
+        fprintf (fp, "\n");
       }
       fprintf (fp, "  Address %p size of %zu, allocated by \"%s\"\n",
-	       ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size, ml->szAllocator);
+               ml->ullFixedValues+MEM_HEADER_GUARD_LEN, ml->size, ml->szAllocator);
     }
   }
 
@@ -263,6 +321,7 @@ static void end (void)
   MUTEX_DESTROY (&g_mutex);
 }
 
+#if (defined TRACE && TRACE == 1)
 static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax)
 {
   size_t sSrc;
@@ -274,10 +333,10 @@ static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax
     if (sDst == sMax)
     {
       szDst[sMax-1] = '\0';
-      
+
       break;
     }
-    
+
     switch (szSrc[sSrc])
     {
     case '(' :
@@ -305,20 +364,20 @@ static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax
         szDst[sDst++] = szSrc[sSrc];
       }
     }
-  }  
+  }
 
   return sDst;
 }
 
 static char *trace (int iLen, unsigned ucGetPtr)
 {
+  char *szPtr=NULL;
   int nptrs;
   char **strings;
   void *buffer[200];
-  char *szPtr=NULL;
 
   nptrs = backtrace(buffer, sizeof(buffer)/sizeof(buffer[0]));
-  
+
   strings = backtrace_symbols(buffer, nptrs);
   if (strings == NULL)
   {
@@ -331,7 +390,7 @@ static char *trace (int iLen, unsigned ucGetPtr)
     int j;
     for (j = 0; j < nptrs; j++)
     {
-      printf("TRACE> %s\n", strings[j]);
+      SML_PRINTF("TRACE> %s\n", strings[j]);
     }
   }
   else
@@ -341,7 +400,7 @@ static char *trace (int iLen, unsigned ucGetPtr)
     size_t sPos = 0;
 
     szPtr = (char *)realloc (szPtr, maxSize);
-    assert (szPtr != NULL);
+    ASSERT (szPtr != NULL, "szPtr is NULL");
     for (i = iLen-1; i < nptrs; i++)
     {
       sPos = getFunction (szPtr, sPos, strings[i], maxSize);
@@ -364,6 +423,15 @@ static char *trace (int iLen, unsigned ucGetPtr)
 
   return szPtr;
 }
+#else
+static char *trace (int iLen, unsigned ucGetPtr)
+{
+  (void)iLen;
+  (void)ucGetPtr;
+
+  return NULL;
+}
+#endif
 
 static struct memoryHeader *verifyIntegrity (void *vPtr)
 {
@@ -381,7 +449,9 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
 
   for (i = 0 ; i < MEM_HEADER_GUARD_LEN ; i++)
   {
-    assert (mHead->ullFixedValues[i] == GUARD_BAND_TOP);
+    ASSERT (mHead->ullFixedValues[i] == GUARD_BAND_TOP,
+            "Top guard band %d corrupt expected 0x%016llX got 0x016%llX - this is BEFORE allocated memory\n",
+            i, GUARD_BAND_TOP, mHead->ullFixedValues[i]);
   }
 
   ucPtr = ((unsigned char *) vPtr);
@@ -389,13 +459,16 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
        ((unsigned long long) (ucPtr + s)) % (sizeof (unsigned long long));
        s++)
   {
-    assert (ucPtr[s] == (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF));
+    ASSERT (ucPtr[s] == (unsigned char) (((unsigned long long) (ucPtr+s)) & 0xFF),
+            "end of alloc memory over-written %zu bytes beyond end", 1+s-size);
   }
   mCap = (struct memoryCap *)(ucPtr + s);
 
   for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
   {
-    assert (mCap->ullFixedValues[i] == GUARD_BAND_BOTTOM);
+    ASSERT (mCap->ullFixedValues[i] == GUARD_BAND_BOTTOM,
+            "Bottom guard band %d corrupt expected 0x%016llX got 0x%016llX - this AFTER allocated memory\n",
+            i, GUARD_BAND_BOTTOM, mCap->ullFixedValues[i]);
   }
 
   return mHead;
@@ -436,7 +509,11 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
     mHead = verifyIntegrity (vPtr);
     szAllocator = mHead->szAllocator;
     MUTEX_LOCK (&g_mutex);
-    LIST_REMOVE (mHead, doubleLL);
+    if (mHead->doubleLL.le_prev != NULL)
+    {
+      LIST_REMOVE (mHead, doubleLL);
+      mHead->doubleLL.le_prev = NULL;
+    }
     MUTEX_UNLOCK (&g_mutex);
   }
   mHead = (struct memoryHeader *)gp_orgRealloc (mHead, adjSize);
@@ -461,26 +538,28 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
         gi_allocCount++;
         MUTEX_UNLOCK (&g_mutex);
       }
-      printf ("realloc (%p, %zu) = %p, allocated by %s (org: %s) %d\n",
-	      vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, szAllocator, gi_allocCount);
+      SML_PRINTF ("realloc (%p, %zu) = %p, allocated by %s (org: %s) %d\n",
+                  vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, szAllocator, gi_allocCount);
       if (szAllocator != NULL)
       {
         free (szAllocator);
       }
       break;
+
     case MALLOC:
       MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
-      printf ("malloc (%zu) = %p, allocated by %s, %d\n",
-	      size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
+      SML_PRINTF ("malloc (%zu) = %p, allocated by %s, %d\n",
+                  size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
       break;
+
     case CALLOC:
       MUTEX_LOCK (&g_mutex);
       gi_allocCount++;
       MUTEX_UNLOCK (&g_mutex);
-      printf ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
-	      nmemb, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
+      SML_PRINTF ("calloc (%zu, %zu) = %p, allocated by %s, %d\n",
+                  nmemb, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, gi_allocCount);
       break;
     }
     gi_hookDisabled = 0;
@@ -534,13 +613,13 @@ static void *internalStaticAlloc (size_t size)
   static __thread unsigned long long ullStatic[0x3000];
   static __thread size_t sIndex = 0;
   void *vPtr;
-  
+
   vPtr = &ullStatic[sIndex];
-  
+
   // find next spot to "allocate" until init() can be called
   // in case it happens multiple times
   sIndex += (size + (sizeof(ullStatic[0])-1)) / sizeof (ullStatic[0]);
-  
+
   if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
   {
     // if we hit this, we have allocated more memory on startup than
@@ -563,7 +642,11 @@ static void internalFree (void *vPtr, int iLen)
   szAllocator = mHead->szAllocator;
 
   MUTEX_LOCK (&g_mutex);
-  LIST_REMOVE (mHead, doubleLL);
+  if (mHead->doubleLL.le_prev != NULL)
+  {
+    LIST_REMOVE (mHead, doubleLL);
+    mHead->doubleLL.le_prev = NULL;
+  }
   MUTEX_UNLOCK (&g_mutex);
   gp_orgFree (mHead);
 
@@ -573,8 +656,8 @@ static void internalFree (void *vPtr, int iLen)
     szCaller = trace (iLen, 1);
     if (szAllocator != NULL)
     {
-      printf ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n",
-              vPtr, szAllocator, szCaller, gi_allocCount);
+      SML_PRINTF ("free (%p) (allocated by \"%s\" freed by \"%s\"), %d\n",
+                  vPtr, szAllocator, szCaller, gi_allocCount);
     }
     MUTEX_LOCK (&g_mutex);
     gi_allocCount--;
@@ -588,14 +671,14 @@ static void internalFree (void *vPtr, int iLen)
     {
       free (szAllocator);
     }
-    gi_hookDisabled = 0;  
+    gi_hookDisabled = 0;
   }
 }
 
 void *malloc (size_t size)
 {
   void *vPtr;
-  
+
   if (gp_orgMalloc == NULL)
   {
     // C++ allocates memory before init() can be called in this module
@@ -619,7 +702,7 @@ void *realloc(void *vPtr, size_t size)
     // the appropriate code.
     abort ();
   }
-  
+
   // you can free memory with realloc, if you pass 0 size, with a
   // non NULL pointer however, I can see in the realloc(3) implementation
   // under linux, this will return a pointer which you can free, so
