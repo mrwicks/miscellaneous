@@ -1,11 +1,20 @@
+////////////////////////////////////////////////////////////////////////////////
 // compile with one of the following:
 // ----------------------------------
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl
 // gcc -g -Wall -rdynamic ./simpleMemoryLibrary.c -ldl -pthread
 //
+// #defines for control (use -D{define}=1 to enable)
+//   -DSML_PRINTF=1 : enable printf's output
+//   -DTRACE=1      : enable stack trace on each allocate/free
+//
+// Both are disabled by default - if you never enable trace, you can omit
+// -rdynamic from the compile line.
+//
 // This library over-rides malloc(3), realloc(3), calloc(3), and the free(3)
 // functions in order to detect memory leaks, and memory over-runs.  All
-// allocations and frees are reported to stdout.
+// allocations and frees are reported to stdout.  Any (detected) over-run
+// (or under-run) causes an abort(3).
 //
 // This supports pthread - if you aren't using pthreads, just disable the
 // #include of pthread.h to compile out mutexes and to remove PID tracking
@@ -23,24 +32,36 @@
 //
 // Glibc does internal allocations which it never frees, so you may see
 // some outstanding allocations when your code exits.  You can suppress
-// these with mem_ignore_current_allocations.
+// these with mem_ignore_current_allocations which just removes any allocated
+// blocks from the linked list of blocks.
 //
+// !!NOTE!!
+//
+// If when using this little library you immediately get an abort() on startup
+// it's most likely a failure in internalStaticAlloc (size_t size).  Basically
+// calls can be made before we can use the internal allocators within glibc.
+// You can fix this by changing the size of ullStatic[]
+////////////////////////////////////////////////////////////////////////////////
 // This code is based off from this presentation:
 //    https://www.slideshare.net/tetsu.koba/tips-of-malloc-free
-//
+////////////////////////////////////////////////////////////////////////////////
 // You might want to install these man pages for pthreads.  This is a note for
 // myself in the future - I had a devil of a time finding these
 //
 //   sudo apt-get install manpages-posix manpages-posix-dev
 //   sudo apt-get install glibc-doc
+////////////////////////////////////////////////////////////////////////////////
+
 #include <stdio.h>
 #include <stdlib.h>
+#if (defined TRACE && TRACE==1)
 #include <execinfo.h>
+#endif //(defined TRACE && TRACE==1)
 #include <strings.h>
 #include <errno.h>
 #include <string.h>
 #include <sys/queue.h>
-#include <pthread.h>
+#include <pthread.h> // if this is commented out, pthread support is removed
 
 #ifndef __USE_GNU
 #define __USE_GNU 1
@@ -112,63 +133,64 @@ void static end  (void) __attribute__((destructor));  // check for any outstandi
 #define SML_PRINTF(...) printf (__VA_ARGS__)
 #else
 #define SML_PRINTF(...)
-#endif
+#endif //(defined SML_PRINTF && SML_PRINTF==1)
 
 #ifdef _PTHREAD_H
 
+// wrappers for mutex so I don't have to bother with checking error conditions.
 #define MUTEX_INIT(mp)                  \
 do                                      \
 {                                       \
-  if (gi_hookDisabled == 0)             \
+  if (0 && gi_hookDisabled == 0)        \
   {                                     \
     SML_PRINTF ("MUTEX_INIT\n");        \
   }                                     \
   if (pthread_mutex_init(mp,NULL) != 0) \
   {                                     \
     perror("pthread_mutex_init");       \
-    exit(EXIT_FAILURE);                 \
+    abort ();                           \
   }                                     \
 } while (0)
 
 #define MUTEX_LOCK(mp)                  \
 do                                      \
 {                                       \
-  if (gi_hookDisabled == 0)             \
+  if (0 && gi_hookDisabled == 0)        \
   {                                     \
     SML_PRINTF ("MUTEX_LOCK\n");        \
   }                                     \
   if (pthread_mutex_lock(mp) != 0)      \
   {                                     \
     perror("pthread_mutex_lock");       \
-    exit(EXIT_FAILURE);                 \
+    abort ();                           \
   }                                     \
 } while (0)
 
 #define MUTEX_UNLOCK(mp)                \
 do                                      \
 {                                       \
-  if (gi_hookDisabled == 0)             \
+  if (0 && gi_hookDisabled == 0)        \
   {                                     \
     SML_PRINTF ("MUTEX_UNLOCK\n");      \
   }                                     \
   if (pthread_mutex_unlock(mp) != 0)    \
   {                                     \
     perror("pthread_mutex_unlock");     \
-    exit(EXIT_FAILURE);                 \
+    abort ();                           \
   }                                     \
 } while (0)
 
 #define MUTEX_DESTROY(mp)               \
 do                                      \
 {                                       \
-  if (gi_hookDisabled == 0)             \
+  if (0 && gi_hookDisabled == 0)        \
   {                                     \
     SML_PRINTF ("MUTEX_DESTROY\n");     \
   }                                     \
   if (pthread_mutex_destroy(mp) != 0)   \
   {                                     \
     perror("pthread_mutex_destroy");    \
-    exit(EXIT_FAILURE);                 \
+    abort ();                           \
   }                                     \
 } while (0)
 
@@ -321,7 +343,7 @@ static void end (void)
   MUTEX_DESTROY (&g_mutex);
 }
 
-#if (defined TRACE && TRACE == 1)
+#if (defined _EXECINFO_H && _EXECINFO_H == 1)
 static size_t getFunction (char *szDst, size_t sOffset, char *szSrc, size_t sMax)
 {
   size_t sSrc;
@@ -428,10 +450,11 @@ static char *trace (int iLen, unsigned ucGetPtr)
 {
   (void)iLen;
   (void)ucGetPtr;
+  static char szEmpty[] = "traceDisabled";
 
-  return NULL;
+  return szEmpty;
 }
-#endif
+#endif //(defined _EXECINFO_H && _EXECINFO_H == 1)
 
 static struct memoryHeader *verifyIntegrity (void *vPtr)
 {
@@ -467,7 +490,7 @@ static struct memoryHeader *verifyIntegrity (void *vPtr)
   for (i = 0 ; i < MEM_CAP_GUARD_LEN ; i++)
   {
     ASSERT (mCap->ullFixedValues[i] == GUARD_BAND_BOTTOM,
-            "Bottom guard band %d corrupt expected 0x%016llX got 0x%016llX - this AFTER allocated memory\n",
+            "Bottom guard band %d corrupt expected 0x%016llX got 0x%016llX - this is AFTER allocated memory\n",
             i, GUARD_BAND_BOTTOM, mCap->ullFixedValues[i]);
   }
 
@@ -492,13 +515,14 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
   //       This is POSIX compliant.  If the memory that is allocated
   //       is modified, it will be detected on free.
 
-  // align on a unsigned long long
   adjSize = size*nmemb;
+  adjSize += sizeof (struct memoryHeader) + sizeof (struct memoryCap);
+
+  // align on a unsigned long long
   if (adjSize % sizeof(unsigned long long))
   {
     adjSize += sizeof(unsigned long long) - (adjSize % sizeof(unsigned long long));
   }
-  adjSize += sizeof (struct memoryHeader) + sizeof (struct memoryCap);
 
   // adjust pointer to the actual start of allocation
   if (vPtr != NULL)
@@ -540,10 +564,14 @@ static void *internalRealloc (void *vPtr, size_t size, size_t nmemb, unsigned ch
       }
       SML_PRINTF ("realloc (%p, %zu) = %p, allocated by %s (org: %s) %d\n",
                   vPtr, size, &mHead->ullFixedValues[MEM_HEADER_GUARD_LEN], szCaller, szAllocator, gi_allocCount);
+#if (defined _EXECINFO_H && _EXECINFO_H == 1)
       if (szAllocator != NULL)
       {
         free (szAllocator);
       }
+#else
+      (void) szAllocator;
+#endif //(defined _EXECINFO_H && _EXECINFO_H == 1)
       break;
 
     case MALLOC:
@@ -607,7 +635,10 @@ static void *internalStaticAlloc (size_t size)
 {
   // glibc and C++ can make use of malloc and calloc before the init can be
   // called.  When this happens we have to pass back some usable memory.
-  // This memory is not freed() on exit - at least currently.
+  // This memory is not freed() on exit - at least currently - if it is
+  // later, you'll have to modify the free and possibly realloc functions
+  // as well to detect this is statically allocated and not really part
+  // of the heap.
 
   // C++ allocates quite a large block of memory on startup..
   static __thread unsigned long long ullStatic[0x3000];
@@ -620,10 +651,22 @@ static void *internalStaticAlloc (size_t size)
   // in case it happens multiple times
   sIndex += (size + (sizeof(ullStatic[0])-1)) / sizeof (ullStatic[0]);
 
-  if (sIndex > (sizeof (ullStatic) / sizeof (ullStatic[0])))
+  // if we hit abort(), we have allocated more memory on startup than
+  // we made available, make ullStatic larger
+
+  // I can't use my regular ASSERT here, because it has a printf, and
+  // that needs allocated memory too, just abort
+  //
+  //ASSERT (sIndex < (sizeof (ullStatic) / sizeof (ullStatic[0])),
+  //        "Out of memory, index = %zu max index %zu", sIndex,
+  //        (sizeof (ullStatic) / sizeof (ullStatic[0])));
+  if (sIndex >= (sizeof (ullStatic) / sizeof (ullStatic[0])))
   {
-    // if we hit this, we have allocated more memory on startup than
-    // we made available, make ullStatic larger
+    // You ran out of memory before dlsym(3) could be called,
+    // increase the size of ullStatic.  You can figure out how much
+    // you need based off from the current value of sIndex, at least
+    // for this ONE allocation.
+    
     abort ();
   }
 
@@ -663,6 +706,7 @@ static void internalFree (void *vPtr, int iLen)
     gi_allocCount--;
     MUTEX_UNLOCK (&g_mutex);
 
+#if (defined _EXECINFO_H && _EXECINFO_H == 1)
     if (szCaller != NULL)
     {
       free (szCaller);
@@ -671,6 +715,9 @@ static void internalFree (void *vPtr, int iLen)
     {
       free (szAllocator);
     }
+#else
+    (void) szCaller;
+#endif //(defined _EXECINFO_H && _EXECINFO_H == 1)
     gi_hookDisabled = 0;
   }
 }
@@ -694,14 +741,12 @@ void *malloc (size_t size)
 
 void *realloc(void *vPtr, size_t size)
 {
-  if (gp_orgRealloc == NULL)
-  {
-    // if we hit this, some library that was called before this
-    // library's init() was called.  You'll have to go through a
-    // debugger to see what request is being made and then write
-    // the appropriate code.
-    abort ();
-  }
+  // if we hit this, some library that was called before this
+  // library's init() was called.  You'll have to go through a
+  // debugger to see what request is being made and then write
+  // the appropriate code.
+  ASSERT (gp_orgRealloc != NULL,
+          "realloc called before gp_orgRealloc set");
 
   // you can free memory with realloc, if you pass 0 size, with a
   // non NULL pointer however, I can see in the realloc(3) implementation
