@@ -22,6 +22,7 @@ private:
 public:
   epoller ();
   static void makeFileDescriptorNonBlocking (int iFd);
+  static void makeFileDescriptorBlocking (int iFd);
   bool add (int iFd, void *vPtr=NULL);
   epoll_event wait (int iTimeout = -1);
   bool close (int iFd);
@@ -60,6 +61,27 @@ void epoller::makeFileDescriptorNonBlocking (int iFd)
   }
 }
 
+void epoller::makeFileDescriptorBlocking (int iFd)
+{
+  int iFlags;
+  int iNewFd;
+
+  iFlags = fcntl (iFd, F_GETFL, 0);
+  if (iFlags == -1)
+  {
+    perror ("fcntl");
+    exit (1);
+  }
+
+  iFlags &= ~O_NONBLOCK;
+  iNewFd = fcntl (iFd, F_SETFL, iFlags);
+  if (iNewFd == -1)
+  {
+    perror ("fcntl");
+    exit (1);
+  }
+}
+
 bool epoller::add (int iFd, void *vPtr)
 {
   struct epoll_event event;
@@ -71,8 +93,7 @@ bool epoller::add (int iFd, void *vPtr)
     bNew = false;
     std::cout << "Duplicate\n";
   }
-
-  if (bNew == true)
+  else
   {
     makeFileDescriptorNonBlocking (iFd);
 
@@ -155,6 +176,10 @@ bool epoller::close (int iFd)
       {
         perror ("close");
         exit (1);
+      }
+      else
+      {
+        makeFileDescriptorBlocking (iFd);
       }
     }
     bFound = true;
