@@ -21,7 +21,7 @@ private:
 public:
   epoller ();
   static void makeFileDescriptorNonBlocking (int iFd);
-  bool add (int iFd);
+  bool add (int iFd, void *vPtr=NULL);
   epoll_event wait (int iTimeout = -1);
   bool close (int iFd);
   ~epoller ();  
@@ -59,7 +59,7 @@ void epoller::makeFileDescriptorNonBlocking (int iFd)
   }
 }
 
-bool epoller::add (int iFd)
+bool epoller::add (int iFd, void *vPtr)
 {
   struct epoll_event event;
   int iRet;
@@ -78,8 +78,15 @@ bool epoller::add (int iFd)
   if (bNew == true)
   {
     makeFileDescriptorNonBlocking (iFd);
-    
-    event.data.fd = iFd;
+
+    if (vPtr == NULL)
+    {
+      event.data.fd = iFd;
+    }
+    else
+    {
+      event.data.ptr = vPtr;
+    }
     event.events = EPOLLIN | EPOLLET;
     iRet = epoll_ctl (mi_PollFd, EPOLL_CTL_ADD, iFd, &event);
     
