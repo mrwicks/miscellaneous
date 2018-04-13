@@ -1,5 +1,6 @@
 #include <vector>
 #include <iostream>
+#include <set>
 
 #include <sys/epoll.h>
 #include <unistd.h>
@@ -14,7 +15,7 @@ class epoller
 {
 private:
   std::vector<struct epoll_event> mv_event;
-  std::vector<int> mvi_fileDescriptors;
+  std::set<int> mset_fileDescriptors;
   int mi_PollFd;
   int mi_Ready;
 
@@ -65,14 +66,10 @@ bool epoller::add (int iFd, void *vPtr)
   int iRet;
   bool bNew = true;
 
-  for(std::vector<int>::iterator iter = mvi_fileDescriptors.begin(); iter != mvi_fileDescriptors.end(); iter++)
+  if (mset_fileDescriptors.find(iFd) != mset_fileDescriptors.end())
   {
-    if (*iter == iFd)
-    {
-      bNew = false;
-      std::cout << "Duplicate\n";
-      break;
-    }
+    bNew = false;
+    std::cout << "Duplicate\n";
   }
 
   if (bNew == true)
@@ -100,7 +97,7 @@ bool epoller::add (int iFd, void *vPtr)
     mv_event.push_back (event);
 
     // keep a record of what file descriptors we're monitoring
-    mvi_fileDescriptors.push_back (iFd);
+    mset_fileDescriptors.insert (iFd);
   }
 
   return bNew;
@@ -142,33 +139,31 @@ epoll_event epoller::wait (int iTimeout)
 bool epoller::close (int iFd)
 {
   bool bFound = false;
-  
+  std::set<int>::iterator iter;
+
   // remove from the list of monitored descriptors
-  for(std::vector<int>::iterator iter = mvi_fileDescriptors.begin(); iter != mvi_fileDescriptors.end(); iter++)
+  iter = mset_fileDescriptors.find (iFd);
+  if (iter != mset_fileDescriptors.end())
   {
-    if (*iter == iFd)
+    // remove it from monitoring, explicitly
+    epoll_ctl (mi_PollFd, EPOLL_CTL_DEL, iFd, &mv_event[0]);
+    
+    if (fileno (stdin) != iFd)
     {
-      // remove it from monitoring, explicitly
-      epoll_ctl (mi_PollFd, EPOLL_CTL_DEL, iFd, &mv_event[0]);
-
-      if (fileno (stdin) != iFd)
+      // close - but not if it's stdin
+      if (::close (iFd) == -1)
       {
-        // close - but not if it's stdin
-        if (::close (iFd) == -1)
-        {
-          perror ("close");
-          exit (1);
-        }
+        perror ("close");
+        exit (1);
       }
-      bFound = true;
-
-      // remove this from the list of monitored file descriptors
-      mvi_fileDescriptors.erase (iter);
-
-      // shrink the list of events by one
-      mv_event.erase (mv_event.end());
-      break;
     }
+    bFound = true;
+    
+    // remove this from the list of monitored file descriptors
+    mset_fileDescriptors.erase (iter);
+    
+    // shrink the list of events by one
+    mv_event.erase (mv_event.end());
   }
   return bFound;
 }
@@ -177,8 +172,7 @@ epoller::~epoller ()
 {
   int iStdin = fileno (stdin);
 
-  // close all file descriptors
-  for(std::vector<int>::iterator iter = mvi_fileDescriptors.begin(); iter != mvi_fileDescriptors.end(); iter++)
+  for (std::set<int>::iterator iter = mset_fileDescriptors.begin() ; iter != mset_fileDescriptors.end() ; iter++)
   {
     if (iStdin != *iter) // don't want to close stdin, if we've used it
     {
@@ -189,7 +183,7 @@ epoller::~epoller ()
       }
     }
   }
-  
+    
   // close the epoll fd
   if (::close (mi_PollFd) == -1)
   {
