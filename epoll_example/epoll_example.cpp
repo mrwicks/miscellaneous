@@ -147,7 +147,11 @@ bool epoller::close (int iFd)
       if (fileno (stdin) != iFd)
       {
         // close - but not if it's stdin
-        ::close (iFd);
+        if (::close (iFd) == -1)
+        {
+          perror ("close");
+          exit (1);
+        }
       }
       bFound = true;
 
@@ -171,12 +175,20 @@ epoller::~epoller ()
   {
     if (iStdin != *iter) // don't want to close stdin, if we've used it
     {
-      ::close (*iter);
+      if (::close (*iter) == -1)
+      {
+        perror ("close");
+        exit (1);
+      }
     }
   }
   
   // close the epoll fd
-  ::close (mi_PollFd);
+  if (::close (mi_PollFd) == -1)
+  {
+    perror ("close");
+    exit (1);
+  }
 }
 
 int main (int argc, char **argv)
