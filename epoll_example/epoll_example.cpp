@@ -141,10 +141,12 @@ bool epoller::close (int iFd)
   {
     if (*iter == iFd)
     {
+      // remove it from monitoring, explicitly
+      epoll_ctl (mi_PollFd, EPOLL_CTL_DEL, iFd, &mv_event[0]);
+
       if (fileno (stdin) != iFd)
       {
         // close - but not if it's stdin
-        // NOTE: it's still be polled, there's no way to remove it from the epoll_wait that I know of
         ::close (iFd);
       }
       bFound = true;
