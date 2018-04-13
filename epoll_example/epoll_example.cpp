@@ -46,7 +46,7 @@ bool epoller::removeOrClose (int iFd, bool bClose)
 
     if (bClose == true)
     {
-      if (fileno (stdin) != iFd)
+      if (iFd != STDIN_FILENO)
       {
         // close - but not if it's stdin
         if (::close (iFd) == -1)
@@ -215,11 +215,9 @@ bool epoller::close (int iFd)
 
 epoller::~epoller ()
 {
-  int iStdin = fileno (stdin);
-
   for (std::set<int>::iterator iter = mset_fileDescriptors.begin() ; iter != mset_fileDescriptors.end() ; iter++)
   {
-    if (iStdin != *iter) // don't want to close stdin, if we've used it
+    if (*iter != STDIN_FILENO) // don't want to close stdin, if we've used it
     {
       if (::close (*iter) == -1)
       {
@@ -241,11 +239,52 @@ epoller::~epoller ()
   }
 }
 
+#if 0
+// stole this code from https://stackoverflow.com/questions/1798511/how-to-avoid-pressing-enter-with-getchar#1798833
+#include <termios.h>
+int blah (void)
+{
+  int c;   
+  static struct termios oldt, newt;
+
+  /*tcgetattr gets the parameters of the current terminal
+    STDIN_FILENO will tell tcgetattr that it should write the settings
+    of stdin to oldt*/
+  tcgetattr( STDIN_FILENO, &oldt);
+  /*now the settings will be copied*/
+  newt = oldt;
+
+  /*ICANON normally takes care that one line at a time will be processed
+    that means it will return if it sees a "\n" or an EOF or an EOL*/
+  // also turned off echo
+  newt.c_lflag &= ~(ICANON) & ~(ECHO);          
+
+  /*Those new settings will be set to STDIN
+    TCSANOW tells tcsetattr to change attributes immediately. */
+  tcsetattr( STDIN_FILENO, TCSANOW, &newt);
+
+  /*This is your part:
+    I choose 'e' to end input. Notice that EOF is also turned off
+    in the non-canonical mode*/
+  while((c=getchar())!= 'e')
+  {
+    //putchar(c);
+    printf ("%c", c+1);
+    fflush (stdout);
+  }
+
+  /*restore the old settings*/
+  tcsetattr( STDIN_FILENO, TCSANOW, &oldt);
+
+  return 0;
+}
+#endif
+
 int main (int argc, char **argv)
 {
   epoller ep;
-
-  ep.add (fileno(stdin));
+  
+  ep.add (STDIN_FILENO);
   for (int i = 0 ; i < 3 ; i++)
   {
     struct epoll_event event;
@@ -261,6 +300,7 @@ int main (int argc, char **argv)
         break;
       }
       std::cout << iRet << ":" << var << " ";
+      fflush (stdout);
     }
   }
 
