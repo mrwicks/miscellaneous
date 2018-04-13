@@ -19,15 +19,61 @@ private:
   int mi_PollFd;
   int mi_Ready;
 
+  bool removeOrClose (int iFd, bool bClose);
+
 public:
   epoller ();
   static void makeFileDescriptorNonBlocking (int iFd);
   static void makeFileDescriptorBlocking (int iFd);
   bool add (int iFd, void *vPtr=NULL);
   epoll_event wait (int iTimeout = -1);
+  bool remove (int iFd);
   bool close (int iFd);
   ~epoller ();  
 };
+
+bool epoller::removeOrClose (int iFd, bool bClose)
+{
+  bool bFound = false;
+  std::set<int>::iterator iter;
+
+  // remove from the list of monitored descriptors
+  iter = mset_fileDescriptors.find (iFd);
+  if (iter != mset_fileDescriptors.end())
+  {
+    // remove it from monitoring, explicitly
+    epoll_ctl (mi_PollFd, EPOLL_CTL_DEL, iFd, &mv_event[0]);
+
+    if (bClose == true)
+    {
+      if (fileno (stdin) != iFd)
+      {
+        // close - but not if it's stdin
+        if (::close (iFd) == -1)
+        {
+          perror ("close");
+          exit (1);
+        }
+        else
+        {
+          makeFileDescriptorBlocking (iFd);
+        }
+      }
+      else
+      {
+        makeFileDescriptorBlocking (iFd);
+      }
+    }
+    bFound = true;
+    
+    // remove this from the list of monitored file descriptors
+    mset_fileDescriptors.erase (iter);
+    
+    // shrink the list of events by one
+    mv_event.erase (mv_event.end());
+  }
+  return bFound;
+}
 
 epoller::epoller ()
 {
@@ -157,40 +203,14 @@ epoll_event epoller::wait (int iTimeout)
   return epEvent;
 }
 
+bool epoller::remove (int iFd)
+{
+  return removeOrClose (iFd, false);
+}
+
 bool epoller::close (int iFd)
 {
-  bool bFound = false;
-  std::set<int>::iterator iter;
-
-  // remove from the list of monitored descriptors
-  iter = mset_fileDescriptors.find (iFd);
-  if (iter != mset_fileDescriptors.end())
-  {
-    // remove it from monitoring, explicitly
-    epoll_ctl (mi_PollFd, EPOLL_CTL_DEL, iFd, &mv_event[0]);
-    
-    if (fileno (stdin) != iFd)
-    {
-      // close - but not if it's stdin
-      if (::close (iFd) == -1)
-      {
-        perror ("close");
-        exit (1);
-      }
-      else
-      {
-        makeFileDescriptorBlocking (iFd);
-      }
-    }
-    bFound = true;
-    
-    // remove this from the list of monitored file descriptors
-    mset_fileDescriptors.erase (iter);
-    
-    // shrink the list of events by one
-    mv_event.erase (mv_event.end());
-  }
-  return bFound;
+  return removeOrClose (iFd, true);
 }
 
 epoller::~epoller ()
@@ -205,6 +225,10 @@ epoller::~epoller ()
       {
         perror ("close");
         exit (1);
+      }
+      else
+      {
+        makeFileDescriptorBlocking (*iter);
       }
     }
   }
