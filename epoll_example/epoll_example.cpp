@@ -1,6 +1,3 @@
-#include <vector>
-#include <iostream>
-#include <set>
 
 #include <sys/epoll.h>
 #include <unistd.h>
@@ -10,27 +7,9 @@
 
 #include <stdio.h>
 
+#include <iostream>
 
-class epoller
-{
-private:
-  std::vector<struct epoll_event> mv_event;
-  std::set<int> mset_fileDescriptors;
-  int mi_PollFd;
-  int mi_Ready;
-
-  bool removeOrClose (int iFd, bool bClose);
-
-public:
-  epoller ();
-  static void makeFileDescriptorNonBlocking (int iFd);
-  static void makeFileDescriptorBlocking (int iFd);
-  bool add (int iFd, void *vPtr=NULL);
-  epoll_event wait (int iTimeout = -1);
-  bool remove (int iFd);
-  bool close (int iFd);
-  ~epoller ();  
-};
+#include "epoll_example.h"
 
 bool epoller::removeOrClose (int iFd, bool bClose)
 {
@@ -128,7 +107,7 @@ void epoller::makeFileDescriptorBlocking (int iFd)
   }
 }
 
-bool epoller::add (int iFd, void *vPtr)
+bool epoller::add (int iFd, const epoll_data &epData)
 {
   struct epoll_event event;
   int iRet;
@@ -143,14 +122,7 @@ bool epoller::add (int iFd, void *vPtr)
   {
     makeFileDescriptorNonBlocking (iFd);
 
-    if (vPtr == NULL)
-    {
-      event.data.fd = iFd;
-    }
-    else
-    {
-      event.data.ptr = vPtr;
-    }
+    event.data = epData;
     event.events = EPOLLIN | EPOLLET;
     iRet = epoll_ctl (mi_PollFd, EPOLL_CTL_ADD, iFd, &event);
     
@@ -191,6 +163,11 @@ epoll_event epoller::wait (int iTimeout)
     {
       mi_Ready = iRet;
     }
+    else
+    {
+      // timeout
+      epEvent.events = 0;
+    }
   }
 
   if (mi_Ready > 0)
@@ -201,16 +178,6 @@ epoll_event epoller::wait (int iTimeout)
   }
 
   return epEvent;
-}
-
-bool epoller::remove (int iFd)
-{
-  return removeOrClose (iFd, false);
-}
-
-bool epoller::close (int iFd)
-{
-  return removeOrClose (iFd, true);
 }
 
 epoller::~epoller ()
@@ -283,6 +250,9 @@ int blah (void)
 int main (int argc, char **argv)
 {
   epoller ep;
+  const int iTimeout = 5000;
+
+  printf ("Type 3 lines.  You have %d ms to type each line before timeout\n", iTimeout);
   
   ep.add (STDIN_FILENO);
   for (int i = 0 ; i < 3 ; i++)
@@ -291,16 +261,24 @@ int main (int argc, char **argv)
     int iRet;
     unsigned char var;
     
-    event = ep.wait ();
-    for ( ;; )
+    event = ep.wait (iTimeout);
+    printf (".events = %08x : ", event.events);
+    if (event.events != 0)
     {
-      iRet = read (event.data.fd, &var, sizeof (var));
-      if (iRet == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      for ( ;; )
       {
-        break;
+        iRet = read (event.data.fd, &var, sizeof (var));
+        if (iRet == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        {
+          break;
+        }
+        std::cout << iRet << ":" << var << " ";
+        fflush (stdout);
       }
-      std::cout << iRet << ":" << var << " ";
-      fflush (stdout);
+    }
+    else
+    {
+      printf ("timeout\n");
     }
   }
 
