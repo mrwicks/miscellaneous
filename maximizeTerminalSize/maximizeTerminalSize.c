@@ -9,7 +9,7 @@
 #include <getopt.h>
 #include <stdlib.h>
 
-void set_window_size (int cols, int rows)
+void setWindowSize (int cols, int rows)
 {
   struct winsize win;
 
@@ -135,7 +135,7 @@ int main (int argc, char **argv)
     getCursorPos (&iMaxCol, &iMaxRow);
 
     // set the window size to the maximum column, and row value
-    set_window_size (iMaxCol, iMaxRow);
+    setWindowSize (iMaxCol, iMaxRow);
 
     // reset the cursor position to where it was right after the user hit <return> to run this program
     setCursorPos (iCol, iRow);
