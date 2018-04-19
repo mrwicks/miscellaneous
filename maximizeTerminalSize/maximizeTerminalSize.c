@@ -34,14 +34,14 @@ struct termios clearTermIosFlags (int iFlags)
   newt = oldt;
   newt.c_lflag &= ~(ICANON) & ~(ECHO);          
 
-  tcsetattr( STDIN_FILENO, TCSANOW, &newt);
+  tcsetattr (STDIN_FILENO, TCSANOW, &newt);
 
   return oldt;
 }
 
 void setTermIos (struct termios newt)
 {
-  tcsetattr( STDIN_FILENO, TCSANOW, &newt);
+  tcsetattr (STDIN_FILENO, TCSANOW, &newt);
 }
 
 void setCursorPos (int iCol, int iRow)
@@ -123,26 +123,36 @@ int main (int argc, char **argv)
   // turn off canonical and echo
   oldt = clearTermIosFlags (ICANON | ECHO);
 
-  // get current position
-  getCursorPos (&iCol, &iRow);
+  if (isatty(STDOUT_FILENO))
+  {
+    // get current position
+    getCursorPos (&iCol, &iRow);
 
-  // force [x,y] position to furthest bottom and right of the screen, by using ridiculous numbers
-  setCursorPos (9999, 9999);
+    // force [x,y] position to furthest bottom and right of the screen, by using ridiculous numbers
+    setCursorPos (9999, 9999);
   
-  // query ACTUAL cursor position which will be the bottom right of the screen
-  getCursorPos (&iMaxCol, &iMaxRow);
+    // query ACTUAL cursor position which will be the bottom right of the screen
+    getCursorPos (&iMaxCol, &iMaxRow);
 
-  // set the window size to the maximum column, and row value
-  set_window_size (iMaxCol, iMaxRow);
+    // set the window size to the maximum column, and row value
+    set_window_size (iMaxCol, iMaxRow);
 
-  // reset the cursor position to where it was right after the user hit <return> to run this program
-  setCursorPos (iCol, iRow);
+    // reset the cursor position to where it was right after the user hit <return> to run this program
+    setCursorPos (iCol, iRow);
 
-  // report to the user what the size of the screen is
-  printf ("Terminal size is %d columns and %d rows\n", iMaxCol, iMaxRow);
+    // report to the user what the size of the screen is
+    printf ("Terminal size is %d columns and %d rows\n", iMaxCol, iMaxRow);
 
-  // turn back on ICANON and ECHO
-  setTermIos (oldt);
+    // turn back on ICANON and ECHO
+    setTermIos (oldt);
+  }
+  else
+  {
+    printf ("This doesn't appear to be connected to a terminal, no change\n");
+
+    // turn back on ICANON and ECHO
+    setTermIos (oldt);
+  }
 
   return 0;
 }
