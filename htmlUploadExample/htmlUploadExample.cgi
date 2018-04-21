@@ -56,7 +56,7 @@ sub doUploadCgiScript
     $fileName = $cgi->param ("uploaded_file");
     $fpIn = $cgi->upload ("uploaded_file");
 
-    if (! defined ($fileName) || $fileName == "")
+    if (! defined ($fileName) || $fileName eq "")
     {
         print $cgi->start_html(-title => 'PCAP->(Simplified)XML decoding form');
         printCgiForm ($cgi);
@@ -113,7 +113,7 @@ sub main
     my $tmpFileName;
     my $cgi = new CGI ();
     my $fh;
-    
+
     if (isCgi ())
     {
         ($fileName, $tmpFileName) = doUploadCgiScript ($cgi);
