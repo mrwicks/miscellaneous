@@ -3,6 +3,7 @@
 use Env;
 use CGI;
 use File::Temp qw/ tempfile tempdir /;
+use File::Copy;
 
 exit (main (@ARGV));
 
@@ -73,6 +74,7 @@ sub doUploadCgiScript
         my $bytesRead;
         my $fpOut;
 
+        $fileName = "${fileName}"; # force this to be a string
         ($fpOut, $tmpFileName) = tempfile ();
 
         binmode ($fpIn);
@@ -87,6 +89,24 @@ sub doUploadCgiScript
     }
 
     return ($fileName, $tmpFileName);
+}
+
+sub safeMv
+{
+    my ($src, $dst) = @_;
+    my $ret = 1;
+
+    if (! rename ($src, $dst))
+    {
+        # failed, probably cross linked on a device
+        # copy and delete original
+        if ($ret = copy ($src, $dst))
+        {
+            unlink ($src);
+        }
+    }
+
+    return $ret;
 }
 
 sub bail
@@ -119,6 +139,9 @@ sub main
         ($fileName, $tmpFileName) = doUploadCgiScript ($cgi);
 
         # uploaded file is in $tmpFileName, the original name is in $fileName
+        $fileName =~ s/^.*\///g;
+        $fileName =~ s/\s+$//;
+        safeMv ($tmpFileName, $fileName) || bail ($cgi, "$tmpFileName, [$fileName], WTF - $! $?");
     }
 
     if (defined ($fileName))
