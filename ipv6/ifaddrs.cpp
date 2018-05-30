@@ -78,7 +78,6 @@ bool isLinkLocal (struct sockaddr_in6 *inSockAddr6)
   return false;
 }
 
-/*
 bool convertToIpV6 (struct sockaddr *inSockAddr, struct sockaddr_in6 *inSockAddr6)
 {
   bool bConverted = false;
@@ -86,14 +85,18 @@ bool convertToIpV6 (struct sockaddr *inSockAddr, struct sockaddr_in6 *inSockAddr
   if (((struct sockaddr_in *)inSockAddr)->sin_family == AF_INET6)
   {
     bConverted = true;
-    inSockAddr6->sin6_addr = ((struct sockaddr_in6 *)inSockAddr)->sin6_addr;
+    *inSockAddr6 = *((struct sockaddr_in6 *)inSockAddr);
   }
   if (((struct sockaddr_in *)inSockAddr)->sin_family == AF_INET)
   {
-    size_t ip4Iter = 0;
+    size_t ip4Iter = 3;
     uint32_t ip4addr = ntohl (((struct sockaddr_in *)inSockAddr)->sin_addr.s_addr);
     
     bConverted = true;
+    inSockAddr6->sin6_family   = AF_INET6;
+    inSockAddr6->sin6_port     = ((sockaddr_in *)inSockAddr)->sin_port;
+    inSockAddr6->sin6_flowinfo = 0;
+    inSockAddr6->sin6_scope_id = 0;
     
     for (size_t iter = 0 ; iter < sizeof (inSockAddr6->sin6_addr) ; iter++)
     {
@@ -103,12 +106,12 @@ bool convertToIpV6 (struct sockaddr *inSockAddr, struct sockaddr_in6 *inSockAddr
       case 1:
         inSockAddr6->sin6_addr.s6_addr[iter] = 0xff;
         break;
-      case sizeof (sizeof (inSockAddr6->sin6_addr)) - 4 :
-      case sizeof (sizeof (inSockAddr6->sin6_addr)) - 3 :
-      case sizeof (sizeof (inSockAddr6->sin6_addr)) - 2 :
-      case sizeof (sizeof (inSockAddr6->sin6_addr)) - 1 :
+      case (sizeof (inSockAddr6->sin6_addr)) - 4 :
+      case (sizeof (inSockAddr6->sin6_addr)) - 3 :
+      case (sizeof (inSockAddr6->sin6_addr)) - 2 :
+      case (sizeof (inSockAddr6->sin6_addr)) - 1 :
         inSockAddr6->sin6_addr.s6_addr[iter] = ip4addr >> (8*ip4Iter);
-        ip4Iter++;
+        ip4Iter--;
         break;
       default:
         inSockAddr6->sin6_addr.s6_addr[iter] = 0x00;
@@ -119,7 +122,6 @@ bool convertToIpV6 (struct sockaddr *inSockAddr, struct sockaddr_in6 *inSockAddr
 
   return bConverted;
 }
-*/
 
 void getifaddrs_example (void)
 {
@@ -193,7 +195,6 @@ void getifaddrs_example (void)
 
           printf("<%30s>", szHostName);
 
-          /*
           if (1)
           {
             struct sockaddr_in6 ipv6address;
@@ -211,7 +212,6 @@ void getifaddrs_example (void)
             
             printf("<%30s>", szHostName);
           }
-          */
           break;
         }
 
