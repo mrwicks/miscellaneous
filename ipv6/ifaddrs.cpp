@@ -89,9 +89,12 @@ void getifaddrs_example (void)
       {
         int iFamily;
 
-        struct sockaddr_in *inSockAddr;
-        struct sockaddr_in6 *inSockAddr6;
-        struct trnl_link_stats *stats;
+        union
+        {
+          struct sockaddr_in *inSockAddr;
+          struct sockaddr_in6 *inSockAddr6;
+          struct trnl_link_stats *stats;
+        };
 
         iFamily = ifaddrIter->ifa_addr->sa_family;
         switch (iFamily)
@@ -114,7 +117,8 @@ void getifaddrs_example (void)
             exit(EXIT_FAILURE);
           }
 
-          printf("<%30s>", szHostName);
+          printf ("<%30s>  ", szHostName);
+          printf ("scopeId (zone): %d", inSockAddr6->sin6_scope_id);
           break;
 
         case AF_INET:
