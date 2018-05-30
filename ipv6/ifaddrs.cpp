@@ -102,8 +102,8 @@ bool convertToIpV6 (struct sockaddr *inSockAddr, struct sockaddr_in6 *inSockAddr
     {
       switch (iter)
       {
-      case 0:
-      case 1:
+      case (sizeof (inSockAddr6->sin6_addr)) - 6 :
+      case (sizeof (inSockAddr6->sin6_addr)) - 5 :
         inSockAddr6->sin6_addr.s6_addr[iter] = 0xff;
         break;
       case (sizeof (inSockAddr6->sin6_addr)) - 4 :
