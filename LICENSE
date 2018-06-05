@@ -1,3 +1,13 @@
+For MOST of this code:
+
 #@$@# Lawyers.
 
 This code is simple enough, use it as you see fit.
+
+-------------------------
+
+But I also have code from other people.  Where they've not specified a license.
+For example, in tls_1.2_example which was taken from
+https://aticleworld.com/ssl-server-client-using-openssl-in-c
+
+
