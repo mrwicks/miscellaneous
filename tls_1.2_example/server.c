@@ -41,22 +41,10 @@ int OpenListener(int port)
   }
   return sd;
 }
- 
-int isRoot()
-{
-  if (getuid() != 0)
-  {
-    return 0;
-  }
-  else
-  {
-    return 1;
-  }
-}
 
 SSL_CTX* InitServerCTX(void)
 {
-  SSL_METHOD *method;
+  const SSL_METHOD *method;
   SSL_CTX *ctx;
  
   OpenSSL_add_all_algorithms();     /* load & register all cryptos, etc. */
@@ -84,7 +72,6 @@ void createPemFile ()
   printf ("\n");
 }
 
-
 void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
 {
   /* set the local certificate from CertFile */
@@ -94,6 +81,7 @@ void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
     createPemFile ();
     abort();
   }
+
   /* set the private key from KeyFile (may be the same as CertFile) */
   if ( SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0 )
   {
@@ -101,17 +89,18 @@ void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
     createPemFile ();
     abort();
   }
+
   /* verify private key */
   if ( !SSL_CTX_check_private_key(ctx) )
   {
     fprintf(stderr, "Private key does not match the public certificate\n");
-    createPemFile ();
     abort();
   }
 }
  
 void ShowCerts(SSL* ssl)
-{   X509 *cert;
+{
+  X509 *cert;
   char *line;
  
   cert = SSL_get_peer_certificate(ssl); /* Get certificates (if available) */
@@ -150,6 +139,17 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
     "<UserName>aticle</UserName>"
     "<Password>123</Password>"
     "</Body>";
+
+  // this is my attempt to run HTTPS.. sort of works if you add an exception to the certificate
+  // but doesn't exactly work, because the header for HTTPS is different than HTTP, apparently..
+  // I'm missing required header elements, I guess..
+  const char *szHelloWorld =
+    "Content-type: text/html\n\n"
+    "<html>\n"
+    "<body>\n"
+    "<h1>Hello there!</h1>\n"
+    "</body>\n"
+    "</html>\n";
  
   if ( SSL_accept(ssl) == FAIL )     /* do SSL-protocol accept */
   {
@@ -161,7 +161,7 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
     bytes = SSL_read(ssl, buf, sizeof(buf)); /* get request */
     buf[bytes] = '\0';
  
-    printf("Client msg: \"%s\"\n", buf);
+    printf("Client msg:\n[%s]\n", buf);
  
     if ( bytes > 0 )
     {
@@ -171,7 +171,9 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
       }
       else
       {
-        SSL_write(ssl, "Invalid Message", strlen("Invalid Message")); /* send reply */
+        printf ("Reply with:\n[%s]\n", szHelloWorld);
+        SSL_write(ssl, szHelloWorld, strlen (szHelloWorld));
+        //SSL_write(ssl, "Invalid Message", strlen("Invalid Message")); /* send reply */
       }
     }
     else
@@ -185,33 +187,36 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
   close(sd);            /* close connection */
 }
  
-int main(int count, char *Argc[])
+int main(int argc, char **argv)
 {
   SSL_CTX *ctx;
   int server;
-  char *portnum;
- 
- 
-  //Only root user have the permsion to run the server
-  if(!isRoot())
+  int portnum;
+  
+  if ( argc != 2 )
   {
-    printf("This program must be run as root/sudo user!!");
+    printf("Usage: %s <portnum>\n", argv[0]);
     exit(0);
   }
-  if ( count != 2 )
+
+  portnum = atoi (argv[1]);
+
+  if (portnum < 1024)
   {
-    printf("Usage: %s <portnum>\n", Argc[0]);
-    exit(0);
+    if (getuid () != 0)
+    {
+      printf("This program must be run as root/sudo user since your port # (%d) is < 1024\n", portnum);
+      exit(1);
+    }
   }
- 
+
   // Initialize the SSL library
   SSL_library_init();
  
-  portnum = Argc[1];
   ctx = InitServerCTX();                             /* initialize SSL */
   LoadCertificates(ctx, "mycert.pem", "mycert.pem"); /* load certs */
-  server = OpenListener(atoi(portnum));              /* create server socket */
-  while (1)
+  server = OpenListener(portnum);                    /* create server socket */
+  for (;;)
   {
     struct sockaddr_in addr;
     socklen_t len = sizeof(addr);

@@ -16,6 +16,13 @@
 
 #define FAIL    -1
 
+#define LOCAL_ABORT()                              \
+do                                                 \
+{                                                  \
+  printf ("Abort at %s:%d\n", __FILE__, __LINE__); \
+  abort ();                                        \
+} while (0)
+
 int OpenConnection(const char *hostname, int port)
 {
   int sd;
@@ -24,7 +31,7 @@ int OpenConnection(const char *hostname, int port)
   if ( (host = gethostbyname(hostname)) == NULL )
   {
     perror(hostname);
-    abort();
+    LOCAL_ABORT();
   }
   sd = socket(PF_INET, SOCK_STREAM, 0);
   bzero(&addr, sizeof(addr));
@@ -35,15 +42,17 @@ int OpenConnection(const char *hostname, int port)
   {
     close(sd);
     perror(hostname);
-    abort();
+    fprintf (stderr, "Is the server running, and on the correct port (%d)?\n", port);
+    LOCAL_ABORT();
   }
   return sd;
 }
 
 SSL_CTX* InitCTX(void)
 {
-  SSL_METHOD *method;
+  const SSL_METHOD *method;
   SSL_CTX *ctx;
+
   OpenSSL_add_all_algorithms();     /* Load cryptos, et.al. */
   SSL_load_error_strings();         /* Bring in and register error messages */
   method = TLSv1_2_client_method(); /* Create new client-method instance */
@@ -51,7 +60,7 @@ SSL_CTX* InitCTX(void)
   if ( ctx == NULL )
   {
     ERR_print_errors_fp(stderr);
-    abort();
+    LOCAL_ABORT();
   }
   return ctx;
 }
@@ -68,7 +77,7 @@ void ShowCerts(SSL* ssl)
     printf("Subject: %s\n", line);
     free(line);       /* free the malloc'ed string */
     line = X509_NAME_oneline(X509_get_issuer_name(cert), 0, 0);
-    printf("Issuer: %s\n", line);
+    printf("Issuer: %s\n\n", line);
     free(line);       /* free the malloc'ed string */
     X509_free(cert);  /* free the malloc'ed certificate copy */
   }
@@ -108,15 +117,17 @@ int main(int count, char *strings[])
  
     char acUsername[16] ={0};
     char acPassword[16] ={0};
+//    const char *cpRequestMessage =
+//      "GET /\n";
     const char *cpRequestMessage =
       "<Body>"
       "<UserName>%s</UserName>"
       "<Password>%s</Password>"
       "</Body>";
     printf("Enter the User Name (in the server, it's \"aticle\") : ");
-    scanf("%s",acUsername);
+    scanf("%15s",acUsername);
     printf("\n\nEnter the Password (int the server, it's \"123\") : ");
-    scanf("%s",acPassword);
+    scanf("%15s",acPassword);
     sprintf(acClientRequest, cpRequestMessage, acUsername,acPassword);   /* construct reply */
     printf("\n\nConnected with %s encryption\n", SSL_get_cipher(ssl));
     ShowCerts(ssl);        /* get any certs */
