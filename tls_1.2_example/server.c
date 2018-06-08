@@ -4,6 +4,9 @@
 // gcc -Wall -o server server.c -L/usr/lib -lssl -lcrypto
 // sudo ./server <portnum>
 
+// this MIGHT be based off from:
+// https://wiki.openssl.org/index.php/Simple_TLS_Server
+
 #include <errno.h>
 #include <unistd.h>
 #include <malloc.h>
@@ -140,14 +143,15 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
     "<Password>123</Password>"
     "</Body>";
 
-  // this is my attempt to run HTTPS.. sort of works if you add an exception to the certificate
-  // but doesn't exactly work, because the header for HTTPS is different than HTTP, apparently..
-  // I'm missing required header elements, I guess..
+  // this is my attempt to run HTTPS.. This is sort of the minimal header that seems
+  // to work.  \r is absolutely necessary.
   const char *szHelloWorld =
-    "Content-type: text/html\n\n"
+    "HTTP/1.1 200 OK\r\n"
+    "Content-type: text/html\r\n"
+    "\r\n"
     "<html>\n"
     "<body>\n"
-    "<h1>Hello there!</h1>\n"
+    "<h1>So, this works, if you added a security exception to your web browser</h1>\n"
     "</body>\n"
     "</html>\n";
  
@@ -230,4 +234,6 @@ int main(int argc, char **argv)
   }
   close(server);                  /* close server socket */
   SSL_CTX_free(ctx);              /* release context */
+
+  return 0;
 }

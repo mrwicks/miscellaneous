@@ -2,7 +2,7 @@
 // --------------------
 // https://aticleworld.com/ssl-server-client-using-openssl-in-c/
 // gcc -Wall -o client client.c  -L/usr/lib -lssl -lcrypto
-
+// helpful: https://www.openssl.org/docs/manmaster/man3/
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
@@ -23,11 +23,12 @@ do                                                 \
   abort ();                                        \
 } while (0)
 
-int OpenConnection(const char *hostname, int port)
+int OpenConnection(const char *hostname, uint16_t port)
 {
   int sd;
   struct hostent *host;
   struct sockaddr_in addr;
+  
   if ( (host = gethostbyname(hostname)) == NULL )
   {
     perror(hostname);
@@ -36,8 +37,9 @@ int OpenConnection(const char *hostname, int port)
   sd = socket(PF_INET, SOCK_STREAM, 0);
   bzero(&addr, sizeof(addr));
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
+  addr.sin_port = htons (port);
   addr.sin_addr.s_addr = *(long*)(host->h_addr);
+
   if ( connect(sd, (struct sockaddr*)&addr, sizeof(addr)) != 0 )
   {
     close(sd);
@@ -87,25 +89,30 @@ void ShowCerts(SSL* ssl)
   }
 }
 
-int main(int count, char *strings[])
+int main(int argc, char **argv)
 {
   SSL_CTX *ctx;
   int server;
   SSL *ssl;
-  char buf[1024];
-  char acClientRequest[1024] ={0};
+  static char buf[1024*1024];
   int bytes;
-  char *hostname, *portnum;
-  if ( count != 3 )
+  char *hostname;
+  uint16_t portnum;
+
+  if ( argc != 3 )
   {
-    printf("usage: %s <hostname> <portnum>\n", strings[0]);
+    printf("usage: %s <hostname> <portnum>\n", argv[0]);
     exit(0);
   }
+
+  // Initialize the SSL library
   SSL_library_init();
-  hostname=strings[1];
-  portnum=strings[2];
+
+  hostname = argv[1];
+  portnum = atoi (argv[2]);
+
   ctx = InitCTX();
-  server = OpenConnection(hostname, atoi(portnum));
+  server = OpenConnection(hostname, portnum);
   ssl = SSL_new(ctx);      /* create new SSL connection state */
   SSL_set_fd(ssl, server);    /* attach the socket descriptor */
   if ( SSL_connect(ssl) == FAIL )   /* perform the connection */
@@ -113,31 +120,37 @@ int main(int count, char *strings[])
     ERR_print_errors_fp(stderr);
   }
   else
-  {  
- 
-    char acUsername[16] ={0};
-    char acPassword[16] ={0};
-//    const char *cpRequestMessage =
-//      "GET /\n";
-    const char *cpRequestMessage =
-      "<Body>"
-      "<UserName>%s</UserName>"
-      "<Password>%s</Password>"
-      "</Body>";
-    printf("Enter the User Name (in the server, it's \"aticle\") : ");
-    scanf("%15s",acUsername);
-    printf("\n\nEnter the Password (int the server, it's \"123\") : ");
-    scanf("%15s",acPassword);
-    sprintf(acClientRequest, cpRequestMessage, acUsername,acPassword);   /* construct reply */
+  {
+    char szRequest[4096];
+    sprintf (szRequest,
+             "GET / HTTP/1.1\r\n"
+             "User-Agent: Wget/1.17.1 (linux-gnu)\r\n"
+             "Accept: */*\r\n"
+             "Accept-Encoding: identity\r\n"
+             "Host: %s:%d\r\n"
+//             "Connection: Keep-Alive\n"
+             "\r\n", hostname, portnum);
+
+    printf ("Sending:\n[%s]\n", szRequest);
+
     printf("\n\nConnected with %s encryption\n", SSL_get_cipher(ssl));
     ShowCerts(ssl);        /* get any certs */
-    SSL_write(ssl,acClientRequest, strlen(acClientRequest));   /* encrypt & send message */
+    SSL_write(ssl, szRequest, strlen(szRequest));   /* encrypt & send message */
+
     bytes = SSL_read(ssl, buf, sizeof(buf)); /* get reply & decrypt */
     buf[bytes] = 0;
-    printf("Received: \"%s\"\n", buf);
+    printf("Received (%d bytes):\n[%s]\n", bytes, buf);
+
+    // second send.. - for my real web page, it comes in two parts.
+    //bytes = SSL_read(ssl, buf, sizeof(buf)); /* get reply & decrypt */
+    //buf[bytes] = 0;
+    //printf("Received (%d bytes):\n[%s]\n", bytes, buf);
+
     SSL_free(ssl);        /* release connection state */
   }
+  
   close(server);          /* close socket */
   SSL_CTX_free(ctx);      /* release context */
+  
   return 0;
 }
