@@ -129,19 +129,6 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
   char buf[1024] = {0};
    
   int sd, bytes;
-  const char* ServerResponse=
-    "<Body>"
-    "<Name>aticleworld.com</Name>"
-    "<year>1.5</year>"
-    "<BlogType>Embeded and c/c++</BlogType>"
-    "<Author>amlendra</Author>"
-    "</Body>";
- 
-  const char *cpValidMessage =
-    "<Body>"
-    "<UserName>aticle</UserName>"
-    "<Password>123</Password>"
-    "</Body>";
 
   // this is my attempt to run HTTPS.. This is sort of the minimal header that seems
   // to work.  \r is absolutely necessary.
@@ -169,16 +156,8 @@ void Servlet(SSL* ssl) /* Serve the connection -- threadable */
  
     if ( bytes > 0 )
     {
-      if(strcmp(cpValidMessage,buf) == 0)
-      {
-        SSL_write(ssl, ServerResponse, strlen(ServerResponse)); /* send reply */
-      }
-      else
-      {
-        printf ("Reply with:\n[%s]\n", szHelloWorld);
-        SSL_write(ssl, szHelloWorld, strlen (szHelloWorld));
-        //SSL_write(ssl, "Invalid Message", strlen("Invalid Message")); /* send reply */
-      }
+      printf ("Reply with:\n[%s]\n", szHelloWorld);
+      SSL_write(ssl, szHelloWorld, strlen (szHelloWorld));
     }
     else
     {
