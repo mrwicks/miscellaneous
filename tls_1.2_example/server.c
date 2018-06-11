@@ -6,6 +6,11 @@
 
 // this MIGHT be based off from:
 // https://wiki.openssl.org/index.php/Simple_TLS_Server
+//
+// If you want to get a real certificate, go through these instructions.
+//   https://certbot.eff.org/docs/intro.html
+// Note, this is much easier to do if you have Apache running, and
+// you need a dynamic name service such as: https://www.dynu.com
 
 #include <errno.h>
 #include <unistd.h>
@@ -20,7 +25,63 @@
 #include "openssl/err.h"
  
 #define FAIL    -1
+
+void instructionsForPem (void)
+{
+  printf ("\n");
+  printf ("\n");
+  printf ("Did you forget to create your mycert.pem file?\n");
+  printf ("\n");
+  printf ("Run: openssl req -x509 -nodes -days 365 -newkey rsa:1024 -keyout mycert.pem -out mycert.pem\n");
+  printf ("\n");
+  printf ("If you haven't, but that's my best guess of what has gone wrong..\n");
+  printf ("\n");
+  printf ("\n");
+}
+
+SSL_CTX* InitServerCTX(void)
+{
+  const SSL_METHOD *method;
+  SSL_CTX *ctx;
  
+  OpenSSL_add_all_algorithms();     /* load & register all cryptos, etc. */
+  SSL_load_error_strings();         /* load all error messages */
+  method = TLSv1_2_server_method(); /* create new server-method instance */
+  ctx = SSL_CTX_new(method);        /* create new context from method */
+  if ( ctx == NULL )
+  {
+    ERR_print_errors_fp(stderr);
+    abort();
+  }
+  return ctx;
+}
+
+void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
+{
+  /* set the local certificate from CertFile */
+  if ( SSL_CTX_use_certificate_file(ctx, CertFile, SSL_FILETYPE_PEM) <= 0 )
+  {
+    ERR_print_errors_fp(stderr);
+    instructionsForPem ();
+    abort();
+  }
+
+  /* set the private key from KeyFile (may be the same as CertFile) */
+  if ( SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0 )
+  {
+    ERR_print_errors_fp(stderr);
+    instructionsForPem ();
+    abort();
+  }
+
+  /* verify private key */
+  if ( !SSL_CTX_check_private_key(ctx) )
+  {
+    fprintf(stderr, "Private key does not match the public certificate\n");
+    abort();
+  }
+}
+
 // Create the SSL socket and intialize the socket address structure
 int OpenListener(int port)
 {
@@ -44,64 +105,8 @@ int OpenListener(int port)
   }
   return sd;
 }
-
-SSL_CTX* InitServerCTX(void)
-{
-  const SSL_METHOD *method;
-  SSL_CTX *ctx;
  
-  OpenSSL_add_all_algorithms();     /* load & register all cryptos, etc. */
-  SSL_load_error_strings();         /* load all error messages */
-  method = TLSv1_2_server_method(); /* create new server-method instance */
-  ctx = SSL_CTX_new(method);        /* create new context from method */
-  if ( ctx == NULL )
-  {
-    ERR_print_errors_fp(stderr);
-    abort();
-  }
-  return ctx;
-}
-
-void createPemFile ()
-{
-  printf ("\n");
-  printf ("\n");
-  printf ("Did you forget to create your mycert.pem file?\n");
-  printf ("\n");
-  printf ("Run: openssl req -x509 -nodes -days 365 -newkey rsa:1024 -keyout mycert.pem -out mycert.pem\n");
-  printf ("\n");
-  printf ("If you haven't, but that's my best guess of what has gone wrong..\n");
-  printf ("\n");
-  printf ("\n");
-}
-
-void LoadCertificates(SSL_CTX* ctx, char* CertFile, char* KeyFile)
-{
-  /* set the local certificate from CertFile */
-  if ( SSL_CTX_use_certificate_file(ctx, CertFile, SSL_FILETYPE_PEM) <= 0 )
-  {
-    ERR_print_errors_fp(stderr);
-    createPemFile ();
-    abort();
-  }
-
-  /* set the private key from KeyFile (may be the same as CertFile) */
-  if ( SSL_CTX_use_PrivateKey_file(ctx, KeyFile, SSL_FILETYPE_PEM) <= 0 )
-  {
-    ERR_print_errors_fp(stderr);
-    createPemFile ();
-    abort();
-  }
-
-  /* verify private key */
-  if ( !SSL_CTX_check_private_key(ctx) )
-  {
-    fprintf(stderr, "Private key does not match the public certificate\n");
-    abort();
-  }
-}
- 
-void ShowCerts(SSL* ssl)
+void ShowCerts(SSL* ssl) //? RBW
 {
   X509 *cert;
   char *line;
@@ -196,9 +201,16 @@ int main(int argc, char **argv)
   // Initialize the SSL library
   SSL_library_init();
  
-  ctx = InitServerCTX();                             /* initialize SSL */
-  LoadCertificates(ctx, "mycert.pem", "mycert.pem"); /* load certs */
-  server = OpenListener(portnum);                    /* create server socket */
+  ctx = InitServerCTX();                                 /* initialize SSL */
+  //LoadCertificates(ctx, "mycert.pem", "mycert.pem");   /* load certs - this are fake certs (self signed) */
+  LoadCertificates(ctx, "fullchain.pem", "privkey.pem"); /* load certs - these are real certs - and they are NOT checked in.. */
+  server = OpenListener(portnum);                        /* create server socket */
+
+  // cert.pem
+  // chain.pem
+  // fullchain.pem
+  // privkey.pem
+
   for (;;)
   {
     struct sockaddr_in addr;
