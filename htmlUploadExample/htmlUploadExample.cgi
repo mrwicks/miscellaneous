@@ -31,7 +31,7 @@ sub printCgiForm
     my $program = $0;
     $program =~ s/^.+\///g;
 
-    print "Enter a pcap file to decode:<p>\n";
+    print "Enter a file to upload:<p>\n";
     print $cgi->start_form(-method=>"post",
                            -action=>$program,
                            -enctype=>"multipart/form-data");
@@ -59,7 +59,7 @@ sub doUploadCgiScript
 
     if (! defined ($fileName) || $fileName eq "")
     {
-        print $cgi->start_html(-title => 'PCAP->(Simplified)XML decoding form');
+        print $cgi->start_html(-title => 'Upload a file');
         printCgiForm ($cgi);
         print $cgi->end_html;
 
@@ -148,7 +148,7 @@ sub main
     {
         # this does whatever the CGI script does, you can invoke it on the command
         # line with the argument as the file uploaded
-        print $cgi->start_html(-title => "Decoded pcap file: ${fileName}");
+        print $cgi->start_html(-title => "File uploaded: ${fileName}");
         print "filename = ${fileName}<br>\n";
         if (defined $tmpFileName)
         {
