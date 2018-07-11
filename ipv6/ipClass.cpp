@@ -498,6 +498,7 @@ bool ipClass::close (void)
   return (mi_Fd == -1) ? true:false;
 }
 
+/*------ all this is just example code ------*/
 int tcpS (int argc, char **argv)
 {
   unsigned short usPort=7777;
@@ -636,6 +637,8 @@ int udpS (int argc, char **argv)
   
   for (;;)
   {
+    std::string strInAddr;
+
     //Sockets Layer Call: recv ()
     n = ipServer.recv (szBuffer, sizeof (szBuffer)-1, 0, &clientAddr);
     if (n <= 0)
@@ -644,8 +647,9 @@ int udpS (int argc, char **argv)
       break;
     }
     szBuffer[n] = '\0';
+    strInAddr = ipServer.inet_ntop (clientAddr.sin6_addr);
     
-    printf ("Message from client: %s\n", szBuffer);
+    printf ("Message from client: %s [%s]:%d\n", szBuffer, strInAddr.c_str(), htons (clientAddr.sin6_port));
     
     // reverse it
     for (int iIter = 0 ; iIter < n/2 ; iIter++)
@@ -705,7 +709,7 @@ int udpC (int argc, char **argv)
 
     strInAddr = ipClient.inet_ntop (recvFromAddr.sin6_addr);
     printf ("Sent: %s\n", str.c_str());
-    printf ("Recv: %s (%s)\n", szBuffer, strInAddr.c_str());
+    printf ("Recv: %s [%s]:%d\n", szBuffer, strInAddr.c_str(), htons(recvFromAddr.sin6_port));
     printf ("\n");
   }
   
@@ -743,7 +747,23 @@ int main (int argc, char **argv)
   }
   else
   {
-    printf ("Invalid program name %s\n", szProgName);
+    printf ("Invalid program name %s for this program\n", szProgName);
+    printf ("The program runs different code depending on it's name\n");
+    printf ("\n");
+    printf ("Execute the following to make symbolic links:\n");
+    printf ("  ln -s %s tcpS\n", szProgName);
+    printf ("  ln -s %s tcpC\n", szProgName);
+    printf ("  ln -s %s udpS\n", szProgName);
+    printf ("  ln -s %s udpC\n", szProgName);
+    printf ("\n");
+    printf ("Usage is:\n");
+    printf ("  tcpS <IP_address> <port>\n");
+    printf ("  tcpC <IP_address> <port>\n");
+    printf ("  updS <IP_address> <port>\n");
+    printf ("  udpC <IP_address> <port>\n");
+    printf ("\n");
+    printf ("You can use the InAny interface (0.0.0.0) if you specify IP_address to ""\n");
+    printf ("\n");
     iRet = 1;
   }
 
