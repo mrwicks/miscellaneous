@@ -339,20 +339,17 @@ bool ipClass::udpServer (const std::string &strIp, unsigned short usPort, const 
 bool ipClass::udpClient (void)
 {
   bool bRet = false;
+  int sockfd;
 
-  if (mi_Fd != -1)
+  sockfd = ::socket (AF_INET6, SOCK_DGRAM, 0);
+  if (sockfd < 0)
   {
-    int sockfd;
-    sockfd = ::socket (AF_INET6, SOCK_DGRAM, 0);
-    if (sockfd < 0)
-    {
-      ::perror ("socket");
-    }
-    else
-    {
-      mi_Fd = sockfd;
-      bRet = true;
-    }
+    ::perror ("socket");
+  }
+  else
+  {
+    mi_Fd = sockfd;
+    bRet = true;
   }
 
   return bRet;
