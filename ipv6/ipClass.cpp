@@ -22,8 +22,6 @@
 
 #include <errno.h>
 #include <resolv.h>
-#include "openssl/ssl.h"
-#include "openssl/err.h"
 
 // https://stackoverflow.com/questions/34349217/get-subject-and-issuer-information-from-the-x509
 
@@ -58,7 +56,7 @@ std::string ipClass::inet_ntop (const struct in6_addr &in6)
 {
   char dst[INET6_ADDRSTRLEN];
   std::string str ("");
-  
+
   if (::inet_ntop (AF_INET6, (const char *)&in6, dst, INET6_ADDRSTRLEN) == NULL)
   {
     perror ("inet_ntop");
@@ -75,7 +73,7 @@ bool ipClass::inet_pton (const std::string &src, struct in6_addr *pin6)
   int af = AF_INET;
   int iRet;
   const char *szPtr;
-  
+
   // determine if this is in an IPV4 or IPV6 format
   for (szPtr = src.c_str () ; *szPtr != '\0' && af == AF_INET ; szPtr++)
   {
@@ -266,23 +264,25 @@ bool ipClass::accept (ipClass *pClass, struct sockaddr_in6 *paddr, int flags)
 {
   socklen_t addrlen=0;
   int iRet;
-  bool bVal;
+  bool bVal = false;
 
-  if (paddr != NULL)
+  if (mi_Fd != -1)
   {
-    addrlen = sizeof (*paddr);
-  }
+    if (paddr != NULL)
+    {
+      addrlen = sizeof (*paddr);
+    }
 
-  iRet = ::accept4 (mi_Fd, (struct sockaddr *)paddr, &addrlen, flags);
-  if (iRet == -1)
-  {
-    ::perror ("accept");
-    bVal = false;
-  }
-  else
-  {
-    pClass->mi_Fd = iRet;
-    bVal = true;
+    iRet = ::accept4 (mi_Fd, (struct sockaddr *)paddr, &addrlen, flags);
+    if (iRet == -1)
+    {
+      ::perror ("accept");
+    }
+    else
+    {
+      pClass->mi_Fd = iRet;
+      bVal = true;
+    }
   }
 
   return bVal;
@@ -291,7 +291,7 @@ bool ipClass::accept (ipClass *pClass, struct sockaddr_in6 *paddr, int flags)
 bool ipClass::udpServer (const struct sockaddr_in6 &in6)
 {
   bool bRet = false;
-  
+
   mi_Fd = ::socket (AF_INET6, SOCK_DGRAM, 0);
 
   if (mi_Fd < 0)
@@ -338,21 +338,23 @@ bool ipClass::udpServer (const std::string &strIp, unsigned short usPort, const 
 
 bool ipClass::udpClient (void)
 {
-  int sockfd;
-  bool bRet;
-  
-  sockfd = ::socket (AF_INET6, SOCK_DGRAM, 0);
-  if (sockfd < 0)
+  bool bRet = false;
+
+  if (mi_Fd != -1)
   {
-    ::perror ("socket");
-    bRet = false;
+    int sockfd;
+    sockfd = ::socket (AF_INET6, SOCK_DGRAM, 0);
+    if (sockfd < 0)
+    {
+      ::perror ("socket");
+    }
+    else
+    {
+      mi_Fd = sockfd;
+      bRet = true;
+    }
   }
-  else
-  {
-    mi_Fd = sockfd;
-    bRet = true;
-  }
-  
+
   return bRet;
 }
 
@@ -384,7 +386,7 @@ int ipClass::name_to_scope (const std::string &strScope)
 {
   struct ifreq ifreqVal;
   int iScope;
-  
+
   ::memset (&ifreqVal, 0, sizeof (ifreqVal));
   ::strncpy (ifreqVal.ifr_name, strScope.c_str(), sizeof (ifreqVal.ifr_name));
   if (::ioctl (mi_Fd, SIOCGIFINDEX, &ifreqVal) == 0)
@@ -396,7 +398,7 @@ int ipClass::name_to_scope (const std::string &strScope)
     ::perror ("ioctl");
     iScope = -1;
   }
-  
+
   return iScope;
 }
 
@@ -449,7 +451,7 @@ int ipClass::recv (void *vBuffer, int iLen, int iFlags, sockaddr_in6 *pin6)
   else
   {
     socklen_t addrlen = sizeof (*pin6);
-  
+
     iRet = (int)::recvfrom (mi_Fd, vBuffer, (size_t)iLen, iFlags, (struct sockaddr *)pin6, &addrlen);
     if (iRet == -1)
     {
@@ -523,11 +525,11 @@ int tcpS (int argc, char **argv)
     perror ("ipServer.tcpServer");
     exit (1);
   }
-  
+
   for (;;)
   {
     ipClass ipClient;
-    
+
     if (ipServer.accept (&ipClient) != true)
     {
       perror ("accept");
@@ -545,7 +547,7 @@ int tcpS (int argc, char **argv)
       szBuffer[n] = '\0';
 
       printf ("Message from client: %s\n", szBuffer);
-      
+
       // reverse it
       for (int iIter = 0 ; iIter < n/2 ; iIter++)
       {
@@ -555,9 +557,9 @@ int tcpS (int argc, char **argv)
         szBuffer[iIter] = szBuffer[(n-1)-iIter];
         szBuffer[(n-1)-iIter] = ucTmp;
       }
-      
+
       printf ("Message returned:    %s\n", szBuffer);
-      
+
       //Sockets Layer Call: send ()
       n = ipClient.send (szBuffer, n);
       if (n < 0)
@@ -567,7 +569,7 @@ int tcpS (int argc, char **argv)
       }
     }
   }
-        
+
   return 0;
 }
 
@@ -585,7 +587,7 @@ int tcpC (int argc, char **argv)
   {
     usPort = ipClass::str_to_port (argv[2]);
   }
-  
+
   ipClient.tcpClient (strServer, usPort);
 
   for (int iIter = 3 ; iIter < argc ; iIter++)
@@ -596,7 +598,7 @@ int tcpC (int argc, char **argv)
 
     str = argv[iIter];
     iLen = str.size ();
-    
+
     ipClient.send (str.c_str(), iLen);
     iLen = ipClient.recv (szBuffer, sizeof (szBuffer)-1);
     szBuffer[iLen] = '\0';
@@ -605,7 +607,7 @@ int tcpC (int argc, char **argv)
     printf ("Recv: %s\n", szBuffer);
     printf ("\n");
   }
-  
+
   return 0;
 }
 
@@ -634,7 +636,7 @@ int udpS (int argc, char **argv)
     perror ("ipServer.udpServer");
     exit (1);
   }
-  
+
   for (;;)
   {
     std::string strInAddr;
@@ -648,21 +650,23 @@ int udpS (int argc, char **argv)
     }
     szBuffer[n] = '\0';
     strInAddr = ipServer.inet_ntop (clientAddr.sin6_addr);
-    
+
     printf ("Message from client: %s [%s]:%d\n", szBuffer, strInAddr.c_str(), htons (clientAddr.sin6_port));
-    
+
     // reverse it
     for (int iIter = 0 ; iIter < n/2 ; iIter++)
     {
       unsigned char ucTmp;
-      
+
       ucTmp = szBuffer[iIter];
       szBuffer[iIter] = szBuffer[(n-1)-iIter];
       szBuffer[(n-1)-iIter] = ucTmp;
     }
-    
+
+    printf ("\n");
+
     printf ("Message returned:    %s\n", szBuffer);
-    
+
     //Sockets Layer Call: send ()
     n = ipServer.send (szBuffer, n, 0, &clientAddr);
     if (n < 0)
@@ -671,7 +675,7 @@ int udpS (int argc, char **argv)
       break;
     }
   }
-        
+
   return 0;
 }
 
@@ -702,7 +706,7 @@ int udpC (int argc, char **argv)
     std::string strInAddr;
 
     str = argv[iIter];
-    
+
     ipClient.send (str, 0, &serverAddr);
     iLen = ipClient.recv (szBuffer, sizeof (szBuffer)-1, 0, &recvFromAddr);
     szBuffer[iLen] = '\0';
@@ -712,7 +716,7 @@ int udpC (int argc, char **argv)
     printf ("Recv: %s [%s]:%d\n", szBuffer, strInAddr.c_str(), htons(recvFromAddr.sin6_port));
     printf ("\n");
   }
-  
+
   return 0;
 }
 
