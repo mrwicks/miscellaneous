@@ -7,7 +7,7 @@
 
 class ipClass
 {
-private:
+protected:
   int mi_Fd;
 
 public:
