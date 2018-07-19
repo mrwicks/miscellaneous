@@ -1,8 +1,8 @@
 // This was taken from:
 // --------------------
 // https://aticleworld.com/ssl-server-client-using-openssl-in-c/
-// gcc -Wall -o server server.c -L/usr/lib -lssl -lcrypto
-// sudo ./server <portnum>
+// gcc -Wall -o server_non_blocking server_non_blocking.c -L/usr/lib -lssl -lcrypto
+// sudo ./server_non_blocking <portnum>
 
 // this MIGHT be based off from:
 // https://wiki.openssl.org/index.php/Simple_TLS_Server
@@ -149,38 +149,63 @@ int main (int argc, char **argv)
   {
     struct sockaddr_in addr;
     socklen_t len = sizeof (addr);
-    SSL *ssl;
     char buf[1024] = {0};   
-    int sd, bytes;
+    int sd;
+    int bytes;
     struct epoll_event event;
+    SSL *ssl;
 
     // this is my attempt to run HTTPS.. This is sort of the minimal header that seems
     // to work.  \r is absolutely necessary.
-    const char *szHttpServerResponse =
-      "HTTP/1.1 200 OK\r\n"
-      "Content-type: text/html\r\n"
-      "\r\n"
-      "<html>\n"
-      "<body>\n"
-      "<h1>So, this works, if you added a security exception to your web browser</h1>\n"
-      "</body>\n"
-      "</html>\n";
     int client;
 
     epoll_wait (iPollFd, &event, 1, -1);
     
     client = accept (server, (struct sockaddr*)&addr, &len);  /* accept connection as usual */
-    addEpoll (iPollFd, client);    
+    addEpoll (iPollFd, client);
     
     printf ("Connection: %s:%d:%d\n", inet_ntoa (addr.sin_addr), ntohs (addr.sin_port), client);
     ssl = SSL_new (ctx);           /* get new SSL state with context */
     SSL_set_fd (ssl, client);      /* set connection socket to SSL state */
     if (SSL_accept (ssl) == FAIL)  /* do SSL-protocol accept */
     {
+      const char *szHttpServerResponse =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-type: text/html\r\n"
+        "\r\n"
+        "<html>\n"
+        "<body>\n"
+        "<h1>NOTE YOU ARE NOT CONNECTED VIA TLS!  Try HTTPS: in front of your browser request</h1>\n"
+        "</body>\n"
+        "</html>\n";
+
       ERR_print_errors_fp (stderr);
+      bytes = read (client, buf, sizeof(buf));
+      buf[bytes] = '\0';
+
+      printf ("Client msg:\n[%s]\n", buf);
+ 
+      if (bytes > 0)
+      {
+        printf ("Reply with:\n[%s]\n", szHttpServerResponse);
+        write (client, szHttpServerResponse, strlen (szHttpServerResponse));
+      }
+      else
+      {
+        perror ("read");
+      }
     }
     else
     {
+      const char *szHttpServerResponse =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-type: text/html\r\n"
+        "\r\n"
+        "<html>\n"
+        "<body>\n"
+        "<h1>So, this works, if you added a security exception to your web browser</h1>\n"
+        "</body>\n"
+        "</html>\n";
       X509 *cert;
       char *line;
       
@@ -218,7 +243,7 @@ int main (int argc, char **argv)
       }            
     }
     sd = SSL_get_fd (ssl); /* get socket connection */
-    SSL_free (ssl);        /* release SSL state */
+    SSL_free (ssl);        /* release SSL state */ // apparently calls close(client)
     close (sd);            /* close connection */
     // break;
   }
