@@ -22,6 +22,8 @@
 #include <iostream>
 #include <stdio.h>
 
+// g++ -Wall -o async-ssl-svr async-ssl-svr.cc  -L/usr/lib -lssl -lcrypto
+
 #define log(...) do { printf ("%s:%d: ", __FUNCTION__, __LINE__); printf(__VA_ARGS__); printf ("\n"); fflush(stdout); } while(0)
 #define ASSERT(x, ...) if(!(x)) do { log( __VA_ARGS__); printf ("\n"); exit(1); } while(0)
 
@@ -37,7 +39,8 @@ class ipClass
     {
       SSL_DISABLED     = 1<<0,
       TCP_CONNECTED    = 1<<1,
-      SSL_CONNECTED    = 1<<2
+      SSL_STARTED      = 1<<2,
+      SSL_CONNECTED    = 1<<3
     };
     int  mi_state;
     int  mi_Fd;
@@ -46,10 +49,10 @@ class ipClass
   public:
     fdClass (int iFd, int iEvents, int iEpollFd, bool bSslDisabled);
     ~fdClass ();
-    void handleHandshake (int iEpollFd, SSL_CTX* sslCtx);
-    void handleDataRead (void);
+    bool handleHandshake (int iEpollFd, SSL_CTX* sslCtx);
+    bool handleDataRead (void);
     void handleAccept (int iEpollFd, int iListenFd, bool bSslDisabled);
-    void handleRead (int iEpollFd, SSL_CTX* sslCtx, fdClass *fd);
+    bool handleRead (int iEpollFd, SSL_CTX* sslCtx, fdClass *fd);
     bool disableSsl (void);
   };
 
@@ -103,8 +106,9 @@ ipClass::fdClass::~fdClass ()
   }
 }
 
-void ipClass::fdClass::handleHandshake (int iEpollFd, SSL_CTX* sslCtx)
+bool ipClass::fdClass::handleHandshake (int iEpollFd, SSL_CTX* sslCtx)
 {
+  bool bRet = false;
   int iRet;
   int iError;
 
@@ -117,7 +121,8 @@ void ipClass::fdClass::handleHandshake (int iEpollFd, SSL_CTX* sslCtx)
 
   if (mi_state != SSL_DISABLED)
   {
-    if (m_ssl == NULL)
+    //if (m_ssl == NULL)
+    if ((mi_state & SSL_STARTED) == 0)
     {
       m_ssl = SSL_new (sslCtx);
       ASSERT (m_ssl != NULL, "SSL_new failed");
@@ -125,13 +130,14 @@ void ipClass::fdClass::handleHandshake (int iEpollFd, SSL_CTX* sslCtx)
       ASSERT (iRet!=0, "SSL_set_fd failed");
       log ("SSL_set_accept_state for fd %d", mi_Fd);
       SSL_set_accept_state (m_ssl);
+      mi_state |= SSL_STARTED;
     }
-    iRet = SSL_do_handshake (m_ssl); // this will block
+    iRet = SSL_do_handshake (m_ssl); // this will block - it should be safe to make this non blocking..
     if (iRet == 1)
     {
-      mi_state = TCP_CONNECTED | SSL_CONNECTED;
+      mi_state = TCP_CONNECTED | SSL_STARTED | SSL_CONNECTED;
       log ("ssl connected fd %d", mi_Fd);
-      return;
+      return bRet;
     }
 
     iError = SSL_get_error (m_ssl, iRet);
@@ -139,13 +145,16 @@ void ipClass::fdClass::handleHandshake (int iEpollFd, SSL_CTX* sslCtx)
     {
       log ("SSL_do_handshake return %d error %d errno %d msg %s", iRet, iError, errno, strerror (errno));
       ERR_print_errors_fp (stdout);
-      delete this; //RBW:  NOT REALLY.    
+      bRet = true;
     }
   }
+
+  return bRet;
 }
 
-void ipClass::fdClass::handleDataRead (void)
+bool ipClass::fdClass::handleDataRead (void)
 {
+  bool bRet = false;
   char szBuf[4096];
   int iBytesRead;
   static int iCount = 0;
@@ -192,7 +201,8 @@ void ipClass::fdClass::handleDataRead (void)
     {
       iBytesWrite = send(mi_Fd, szBuf, iBufSize, 0);
     }
-    delete this;
+    bRet = true;
+    return bRet;
   }
 
   if (mi_state != SSL_DISABLED)
@@ -203,10 +213,10 @@ void ipClass::fdClass::handleDataRead (void)
     if (iBytesRead < 0 && iSslError != SSL_ERROR_WANT_READ)
     {
       log ("SSL_read return %d error %d errno %d msg %s", iBytesRead, iSslError, errno, strerror (errno));
-      delete this;
-      return;
+      bRet = true;
+      return bRet;
     }
-    if (iBytesRead == 0)
+    else if (iBytesRead == 0)
     {
       if (iSslError == SSL_ERROR_ZERO_RETURN)
       {
@@ -216,21 +226,24 @@ void ipClass::fdClass::handleDataRead (void)
       {
         log ("Connection has been aborted.");
       }
-      delete this;
+      bRet = true;
+      return bRet;
     }
   }
   else
   {
     if (iBytesRead == 0)
     {
-      delete this;
+      bRet = true;
     }
     else if (iBytesRead <= 0)
     {
       // error
-      delete this;
+      bRet = true;
     }
   }
+
+  return bRet;
 }
 
 void ipClass::fdClass::handleAccept (int iEpollFd, int iListenFd, bool bSslDisabled)
@@ -271,21 +284,23 @@ void ipClass::fdClass::handleAccept (int iEpollFd, int iListenFd, bool bSslDisab
   }
 }
 
-void ipClass::fdClass::handleRead (int iEpollFd, SSL_CTX* sslCtx, fdClass *iFd)
+bool ipClass::fdClass::handleRead (int iEpollFd, SSL_CTX* sslCtx, fdClass *iFd)
 {
+  bool bRet = false;
+  
   if (mi_state != SSL_DISABLED)
   {
     if (iFd == this)
     {
       handleAccept (iEpollFd, mi_Fd, false);
     }
-    else if (mi_state == (TCP_CONNECTED | SSL_CONNECTED))
+    else if (mi_state == (TCP_CONNECTED | SSL_STARTED | SSL_CONNECTED))
     {
-      handleDataRead ();
+      bRet = handleDataRead ();
     }
     else
     {
-      handleHandshake (iEpollFd, sslCtx);
+      bRet = handleHandshake (iEpollFd, sslCtx);
     }
   }
   else
@@ -296,9 +311,11 @@ void ipClass::fdClass::handleRead (int iEpollFd, SSL_CTX* sslCtx, fdClass *iFd)
     }
     else
     {
-      handleDataRead ();
+      bRet = handleDataRead ();
     }
   }
+
+  return bRet;
 }
 
 bool ipClass::fdClass::disableSsl (void)
@@ -409,7 +426,9 @@ void ipClass::handleEvents (int iWaitMs)
 {
   const int kMaxEvents = 20;
   struct epoll_event activeEvs[kMaxEvents];
+  fdClass *fdToDelete[kMaxEvents];
   int iEventCount;
+  int iEventsToDelete=0;
 
   iEventCount = epoll_wait (mi_EpollFd, activeEvs, kMaxEvents, iWaitMs);
   log ("epoll gives %d events", iEventCount);
@@ -426,7 +445,30 @@ void ipClass::handleEvents (int iWaitMs)
     // to do blocking.
     if (events & (EPOLLIN | EPOLLERR | EPOLLHUP))
     {
-      fdh->handleRead (mi_EpollFd, m_sslCtx, mi_li);
+      if (fdh->handleRead (mi_EpollFd, m_sslCtx, mi_li) == true)
+      {
+        // this particular listener needs to be deleted // RBW
+        fdToDelete[iEventsToDelete++] = fdh;
+      }
+    }
+  }
+
+  // make certain listener is only deleted once.  There appears to be a
+  // (rare) race condition when the same event can be triggered twice.
+  for (int i = 0 ; i < iEventsToDelete ; i++)
+  {
+    for (int j = i+1 ; j < iEventsToDelete ; j++)
+    {
+      // don't delete twice
+      if (fdToDelete[i] == fdToDelete[j])
+      {
+        fdToDelete[j] = NULL;
+      }
+    }
+
+    if (fdToDelete[i] != NULL)
+    {
+      delete fdToDelete[i];
     }
   }
 }
