@@ -1,0 +1,43 @@
+#include <stdio.h>
+#define __USE_GNU
+#define _GNU_SOURCE         // See feature_test_macros(7)
+#include <fcntl.h>          // Definition of AT_* constants
+#include <poll.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/sysinfo.h>
+#include <sys/types.h>      // See NOTES
+#include <sys/utsname.h>
+#include <unistd.h>
+
+int access(const char *pathname, int mode);
+int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int brk(void *addr);
+int close(int fd);
+int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+int execve(const char *filename, char *const argv[], char *const envp[]);
+///int fstat(int fd, struct stat *statbuf);
+int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen);
+//int ioctl(int fd, unsigned long request, ...);
+int mprotect(void *addr, size_t len, int prot);
+int munmap(void *addr, size_t length);
+int nanosleep(const struct timespec *req, struct timespec *rem);
+//int open(const char *pathname, int flags, ...);
+int poll(struct pollfd *fds, nfds_t nfds, int timeout);
+int rename(const char *oldpath, const char *newpath);
+int sendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, int flags);
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen);
+int socket(int domain, int type, int protocol);
+int sysinfo(struct sysinfo *info);
+int uname(struct utsname *buf);
+off_t lseek(int fd, off_t offset, int whence);
+pid_t getpid(void);
+ssize_t getrandom(void *buf, size_t buflen, unsigned int flags);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen);
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags);
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen);
+ssize_t write(int fd, const void *buf, size_t count);
+//void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...);
+//void *malloc(size_t size);
